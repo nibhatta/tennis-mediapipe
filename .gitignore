@@ -1,0 +1,52 @@
+# Python & Virtual Environment
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Streamlit temporary data & cache
+.streamlit/
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Large video assets and rendered outputs
+videos/*
+!videos/.gitkeep
+output/*
+!output/.gitkeep
+*.mp4
+*.mov
+*.avi
+*.m4v
+*.mkv
+*.webm
