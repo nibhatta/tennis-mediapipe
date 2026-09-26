@@ -77,6 +77,18 @@
     z-index: 20; background: rgba(10, 14, 20, 0.92); padding: 24px; text-align: center; }
   #err .box { max-width: 420px; font-size: 14px; line-height: 1.6; color: var(--dim); }
 
+  /* CSV paste panel */
+  #pastepanel { position: fixed; left: 12px; right: 12px; bottom: 118px; z-index: 15;
+    padding: 12px; display: none; max-width: 600px; margin: 0 auto; }
+  #pastepanel .pp-head { display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  #pp-text { width: 100%; height: 150px; background: rgba(8, 12, 18, 0.95); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; padding: 8px; resize: vertical; }
+  #pastepanel .pp-row { display: flex; gap: 8px; margin-top: 8px; }
+  #pastepanel .pp-hint { font-size: 11px; color: var(--dim); margin-top: 8px; line-height: 1.5; }
+  #deck .row2 { flex-wrap: wrap; }
+
   @media (max-width: 640px) {
     #hud { display: none; }
     #title p { display: none; }
@@ -139,7 +151,20 @@
     <button class="tbtn on" id="b-loop" title="Loop playback">Loop</button>
     <button class="tbtn" id="loadbtn" title="Load a landmarks_3d.json file">Load JSON</button>
     <input type="file" id="file" accept=".json,application/json" style="display:none" />
+    <button class="tbtn" id="csvbtn" title="Upload a 33-landmark CSV file">Load CSV</button>
+    <input type="file" id="csvfile" accept=".csv,text/csv,text/plain" style="display:none" />
+    <button class="tbtn" id="pastebtn" title="Paste CSV text to render">Paste CSV</button>
   </div>
+</div>
+
+<div id="pastepanel" class="chip">
+  <div class="pp-head"><span>Paste landmarks CSV</span><button class="tbtn" id="pp-close">✕</button></div>
+  <textarea id="pp-text" spellcheck="false" placeholder="frame,timestamp_sec,landmark_index,landmark_name,x,y,z,visibility&#10;0,0.0,0,nose,0.50963,0.27735,-0.00777,1.0&#10;0,0.0,1,left_eye_inner,0.50227,0.27,-0.0113,1.0&#10;…"></textarea>
+  <div class="pp-row">
+    <button class="tbtn" id="pp-sample" title="Fill with the bundled sample CSV">Fill sample CSV</button>
+    <button class="tbtn on" id="pp-render">Render scene</button>
+  </div>
+  <div class="pp-hint">Same CSV the analyzer exports ("Download Full 33-Landmark 3D CSV"). Needs all 33 landmarks per frame; frames with fewer are shown as "no pose".</div>
 </div>
 
 <div id="err"><div class="box" id="errmsg"></div></div>

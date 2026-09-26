@@ -12,6 +12,8 @@ with open(os.path.join(HERE, "viewer.js")) as f:
     js = f.read()
 with open(os.path.join(HERE, "sample", "sample_landmarks.json")) as f:
     sample = json.load(f)
+with open(os.path.join(HERE, "sample", "sample_landmarks.csv")) as f:
+    sample_csv = f.read()
 
 # Swap the fetch-based boot for embedded data.
 old_boot = """// ---------------------------------------------------------------- boot
@@ -38,6 +40,8 @@ assert tag in html, "script tag not found in index.html"
 inline = (
     "<script>window.__POSE_DATA__ = "
     + json.dumps(sample, separators=(",", ":"))
+    + ";</script>\n<script>window.__SAMPLE_CSV__ = "
+    + json.dumps(sample_csv)
     + ";</script>\n<script type=\"module\">\n"
     + js
     + "\n</script>"
