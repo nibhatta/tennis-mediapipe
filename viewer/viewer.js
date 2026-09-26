@@ -4,8 +4,9 @@
  * Renders an immaculate volumetric 3D biomechanical mannequin with:
  * - Solid pearlescent white bone cylinders and smooth joint spheres
  * - Smooth egg-shaped ellipsoid head, neck, anatomical spine & torso cage
- * - Rectangular frame tennis racket simulation with dynamic grip
- * - 3D tennis court & net background environment
+ * - Rectangular frame tennis racket simulation with dynamic wrist orientation
+ * - Clean, subtle light mesh court ground (no heavy lines or net)
+ * - Biomechanical ground-contact & airborne jump elevation calibration algorithm
  * - Multi-pass Savitzky-Golay trajectory smoothing
  * - Continuous sub-frame cubic Catmull-Rom spline interpolation for 60/120fps fluid playback
  * - Full 360-degree unconstrained orbit controls
@@ -34,6 +35,7 @@ const COL = {
 const SCALE = 3.0;          // World units per normalized unit
 const TRAIL_LEN = 30;       // Wrist trail length in frames
 const SPEEDS = [0.25, 0.5, 1, 2];
+const COURT_Y = -0.78;      // Standard 3D court level
 
 // MediaPipe landmark indices
 const IDX = {
@@ -183,11 +185,114 @@ function smoothFramesData(rawFramesList) {
   return smoothed;
 }
 
+// ---------------------------------------------------------------- Biomechanical Grounding & Airborne Elevation Algorithm
+function calibrateKinematicElevation(framesList) {
+  const n = framesList.length;
+  if (n === 0) return new Float32Array(0);
+
+  const rawOffsets = new Float32Array(n);
+  const frameStats = [];
+
+  for (let i = 0; i < n; i++) {
+    const fr = framesList[i];
+    if (!fr.detected || !fr.landmarks) {
+      frameStats.push(null);
+      continue;
+    }
+    const lms = fr.landmarks;
+
+    const pLAnkle = mpToWorldVec(lms[IDX.L_AN], new THREE.Vector3());
+    const pRAnkle = mpToWorldVec(lms[IDX.R_AN], new THREE.Vector3());
+    const pLHeel = mpToWorldVec(lms[IDX.L_HEEL], new THREE.Vector3());
+    const pRHeel = mpToWorldVec(lms[IDX.R_HEEL], new THREE.Vector3());
+    const pLFoot = mpToWorldVec(lms[IDX.L_FOOT], new THREE.Vector3());
+    const pRFoot = mpToWorldVec(lms[IDX.R_FOOT], new THREE.Vector3());
+
+    const pLHip = mpToWorldVec(lms[IDX.L_HIP], new THREE.Vector3());
+    const pRHip = mpToWorldVec(lms[IDX.R_HIP], new THREE.Vector3());
+    const hipMidY = (pLHip.y + pRHip.y) * 0.5;
+
+    const pLKnee = mpToWorldVec(lms[IDX.L_KN], new THREE.Vector3());
+    const pRKnee = mpToWorldVec(lms[IDX.R_KN], new THREE.Vector3());
+
+    // Lowest foot point in raw world space
+    const minFootY = Math.min(pLAnkle.y, pRAnkle.y, pLHeel.y, pRHeel.y, pLFoot.y, pRFoot.y);
+
+    // Anatomical leg span
+    const currentLegSpan = hipMidY - minFootY;
+
+    // Knee bend angles
+    const v1L = new THREE.Vector3().subVectors(pLHip, pLKnee).normalize();
+    const v2L = new THREE.Vector3().subVectors(pLAnkle, pLKnee).normalize();
+    const kneeBendL = 180 - THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(v1L.dot(v2L), -1, 1)));
+
+    const v1R = new THREE.Vector3().subVectors(pRHip, pRKnee).normalize();
+    const v2R = new THREE.Vector3().subVectors(pRAnkle, pRKnee).normalize();
+    const kneeBendR = 180 - THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(v1R.dot(v2R), -1, 1)));
+
+    const maxKneeBend = Math.max(kneeBendL, kneeBendR);
+
+    frameStats.push({
+      minFootY,
+      hipMidY,
+      currentLegSpan,
+      maxKneeBend,
+    });
+  }
+
+  // Step 2: Establish Ground Baseline Level
+  // Collect feet Y values during stable grounded preparation & trophy load frames
+  const groundedFootYs = [];
+  for (let i = 0; i < n; i++) {
+    const s = frameStats[i];
+    if (!s) continue;
+    if (s.maxKneeBend > 20 || i < n * 0.35 || i > n * 0.8) {
+      groundedFootYs.push(s.minFootY);
+    }
+  }
+  if (groundedFootYs.length === 0) {
+    for (let i = 0; i < n; i++) {
+      if (frameStats[i]) groundedFootYs.push(frameStats[i].minFootY);
+    }
+  }
+  groundedFootYs.sort((a, b) => a - b);
+  // Median grounded foot level in raw coordinates
+  const rawGroundY = groundedFootYs[Math.floor(groundedFootYs.length * 0.45)] || 0;
+
+  // Step 3: Compute Ground Offsets & Airborne Jump Flight
+  for (let i = 0; i < n; i++) {
+    const s = frameStats[i];
+    if (!s) {
+      rawOffsets[i] = COURT_Y - rawGroundY;
+      continue;
+    }
+
+    const groundedOffset = COURT_Y - s.minFootY;
+    const footLift = s.minFootY - rawGroundY;
+
+    // Biomechanical airborne condition:
+    // When the lowest foot is elevated above the baseline ground plane AND
+    // knees are extending / in post-trophy flight phase (explosive upward leg drive):
+    if (footLift > 0.04 && s.maxKneeBend < 40) {
+      // Body is airborne! Ground reference stays at COURT_Y, allowing feet to lift into the air
+      rawOffsets[i] = COURT_Y - rawGroundY;
+    } else {
+      // Grounded on court: Pin lowest foot firmly to the court mesh floor (COURT_Y)
+      rawOffsets[i] = groundedOffset;
+    }
+  }
+
+  // Step 4: Multi-pass smooth the vertical ground offset trajectory
+  const smoothedOffsets = applySavitzkyGolay1D(rawOffsets, SG_11);
+  return smoothedOffsets;
+}
+
 // ---------------------------------------------------------------- state
 let data = null;
 let rawFrames = [];
 let smoothFrames = [];
 let activeFrames = [];
+let verticalOffsets = new Float32Array(0);
 let nFrames = 0;
 let fps = 30;
 let cur = 0;
@@ -200,7 +305,6 @@ let wasPlaying = false;
 let showTrails = true;
 let showBones = true;
 let showRacket = true;
-let showCap = false;
 let showSmooth = true;
 let dominantHand = 'Right';
 let wristWorld = { dom: [], off: [] };
@@ -259,99 +363,38 @@ const rimLight = new THREE.DirectionalLight(0xffffff, 1.2);
 rimLight.position.set(0, 5, -6);
 scene.add(rimLight);
 
-// ---------------------------------------------------------------- 3D Tennis Court & Net in Background
-function createTennisCourt() {
+// ---------------------------------------------------------------- Light Mesh Court Environment
+function createTennisCourtMesh() {
   const courtGroup = new THREE.Group();
 
-  // Court floor
-  const floorGeo = new THREE.PlaneGeometry(16, 26);
+  // Dark ground plane
+  const floorGeo = new THREE.PlaneGeometry(20, 24);
   const floorMat = new THREE.MeshStandardMaterial({
-    color: 0x07090e,
+    color: 0x050508,
     roughness: 0.95,
     metalness: 0.05,
   });
   const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI / 2;
-  floor.position.y = -0.78;
+  floor.position.y = COURT_Y - 0.002;
   courtGroup.add(floor);
 
-  // Court Line Markings
-  const lineMat = new THREE.LineBasicMaterial({ color: COL.courtLine, transparent: true, opacity: 0.45, linewidth: 2 });
-  const lines = [];
+  // Light wireframe grid mesh representing the court
+  const gridHelper = new THREE.GridHelper(16, 32, 0x475569, 0x1e293b);
+  gridHelper.position.y = COURT_Y;
+  courtGroup.add(gridHelper);
 
-  // Baseline at player's side
-  lines.push(-4.1, -0.77, 3.5, 4.1, -0.77, 3.5);
-  // Baseline far side
-  lines.push(-4.1, -0.77, -9.5, 4.1, -0.77, -9.5);
-  // Doubles sidelines
-  lines.push(-4.1, -0.77, 3.5, -4.1, -0.77, -9.5);
-  lines.push(4.1, -0.77, 3.5, 4.1, -0.77, -9.5);
-  // Singles sidelines
-  lines.push(-3.2, -0.77, 3.5, -3.2, -0.77, -9.5);
-  lines.push(3.2, -0.77, 3.5, 3.2, -0.77, -9.5);
-  // Service lines
-  lines.push(-3.2, -0.77, -0.5, 3.2, -0.77, -0.5);
-  lines.push(-3.2, -0.77, -5.5, 3.2, -0.77, -5.5);
-  // Center service line
-  lines.push(0, -0.77, -0.5, 0, -0.77, -5.5);
-  // Center mark
-  lines.push(0, -0.77, 3.5, 0, -0.77, 3.1);
-
-  const linesGeo = new THREE.BufferGeometry();
-  linesGeo.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
-  const courtLinesMesh = new THREE.LineSegments(linesGeo, lineMat);
-  courtGroup.add(courtLinesMesh);
-
-  // 3D Tennis Net in Background (at z = -3.0)
-  const netZ = -3.0;
-  const netY = -0.78;
-  const netHeight = 0.95;
-  const netWidth = 8.6;
-
-  // Net posts
-  const postMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.3, metalness: 0.8 });
-  const postGeo = new THREE.CylinderGeometry(0.035, 0.035, netHeight + 0.1, 16);
-
-  const leftPost = new THREE.Mesh(postGeo, postMat);
-  leftPost.position.set(-netWidth / 2, netY + (netHeight + 0.1) / 2, netZ);
-  courtGroup.add(leftPost);
-
-  const rightPost = new THREE.Mesh(postGeo, postMat);
-  rightPost.position.set(netWidth / 2, netY + (netHeight + 0.1) / 2, netZ);
-  courtGroup.add(rightPost);
-
-  // Top white net band / cable
-  const bandMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 });
-  const bandGeo = new THREE.CylinderGeometry(0.02, 0.02, netWidth, 16);
-  const netBand = new THREE.Mesh(bandGeo, bandMat);
-  netBand.rotation.z = Math.PI / 2;
-  netBand.position.set(0, netY + netHeight, netZ);
-  courtGroup.add(netBand);
-
-  // Translucent Net Grid Mesh
-  const netGridMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    wireframe: true,
-    transparent: true,
-    opacity: 0.22,
-    side: THREE.DoubleSide,
-  });
-  const netMeshGeo = new THREE.PlaneGeometry(netWidth, netHeight, 40, 10);
-  const netMesh = new THREE.Mesh(netMeshGeo, netGridMat);
-  netMesh.position.set(0, netY + netHeight / 2, netZ);
-  courtGroup.add(netMesh);
-
-  // Small center origin arrow marker
+  // Small origin marker
   const originMarker = new THREE.Mesh(
-    new THREE.ConeGeometry(0.03, 0.08, 8),
+    new THREE.ConeGeometry(0.025, 0.06, 8),
     new THREE.MeshBasicMaterial({ color: 0xfacc15 })
   );
-  originMarker.position.set(0, -0.74, 0);
+  originMarker.position.set(0, COURT_Y + 0.03, 0);
   courtGroup.add(originMarker);
 
   return courtGroup;
 }
-scene.add(createTennisCourt());
+scene.add(createTennisCourtMesh());
 
 // ---------------------------------------------------------------- Volumetric 3D Mannequin Skeleton Objects
 const NUM_BONES = MANNEQUIN_BONES.length;
@@ -415,7 +458,7 @@ function createRectangularRacketMesh() {
   const headH = 0.24;
   const tubeR = 0.0075;
 
-  // 1. Handle Rod extending from wrist
+  // 1. Handle Rod
   const gripGeo = new THREE.CylinderGeometry(gripRadius, gripRadius, gripLen, 16);
   gripGeo.translate(0, gripLen / 2, 0);
   const grip = new THREE.Mesh(gripGeo, handleMat);
@@ -475,7 +518,6 @@ function mpToWorldVec(lm, out) {
   return out;
 }
 
-// Continuous Cubic Catmull-Rom sub-frame interpolation
 const _interpP = Array.from({ length: 33 }, () => new THREE.Vector3());
 
 function catmullRom1D(p0, p1, p2, p3, t) {
@@ -507,25 +549,39 @@ function getInterpolatedLandmarks(fFloat) {
   const lm2 = f2 && f2.landmarks ? f2.landmarks : f1.landmarks;
   const lm3 = f3 && f3.landmarks ? f3.landmarks : lm2;
 
+  // Interpolate vertical ground alignment offset
+  const v0 = verticalOffsets[Math.max(0, i - 1)] || 0;
+  const v1 = verticalOffsets[i] || 0;
+  const v2 = verticalOffsets[Math.min(nFrames - 1, i + 1)] || 0;
+  const v3 = verticalOffsets[Math.min(nFrames - 1, i + 2)] || 0;
+  const yOffset = catmullRom1D(v0, v1, v2, v3, alpha);
+
   for (let j = 0; j < 33; j++) {
     const p0 = lm0[j], p1 = lm1[j], p2 = lm2[j], p3 = lm3[j];
     const x = catmullRom1D(p0[0], p1[0], p2[0], p3[0], alpha);
     const y = catmullRom1D(p0[1], p1[1], p2[1], p3[1], alpha);
     const z = catmullRom1D(p0[2], p1[2], p2[2], p3[2], alpha);
     mpToWorldVec([x, y, z], _interpP[j]);
+    _interpP[j].y += yOffset; // Grounded on court mesh / airborne jump elevation!
   }
 
   return _interpP;
 }
 
-function precomputeWristTrails(fList) {
+function precomputeWristTrails(fList, offsets) {
   const dIdx = dominantHand === 'Right' ? IDX.R_WR : IDX.L_WR;
   const oIdx = dominantHand === 'Right' ? IDX.L_WR : IDX.R_WR;
   const res = { dom: [], off: [] };
-  for (const fr of fList) {
+  for (let i = 0; i < fList.length; i++) {
+    const fr = fList[i];
+    const yOff = offsets[i] || 0;
     if (fr.detected && fr.landmarks) {
-      res.dom.push(mpToWorldVec(fr.landmarks[dIdx], new THREE.Vector3()).clone());
-      res.off.push(mpToWorldVec(fr.landmarks[oIdx], new THREE.Vector3()).clone());
+      const pDom = mpToWorldVec(fr.landmarks[dIdx], new THREE.Vector3());
+      pDom.y += yOff;
+      const pOff = mpToWorldVec(fr.landmarks[oIdx], new THREE.Vector3());
+      pOff.y += yOff;
+      res.dom.push(pDom);
+      res.off.push(pOff);
     } else {
       const l = res.dom.length;
       res.dom.push(l ? res.dom[l - 1].clone() : new THREE.Vector3());
@@ -537,7 +593,8 @@ function precomputeWristTrails(fList) {
 
 function updateActiveSmoothing() {
   activeFrames = showSmooth ? smoothFrames : rawFrames;
-  wristWorld = precomputeWristTrails(activeFrames);
+  verticalOffsets = calibrateKinematicElevation(activeFrames);
+  wristWorld = precomputeWristTrails(activeFrames, verticalOffsets);
   const btn = document.getElementById('t-smooth');
   if (btn) btn.classList.toggle('on', showSmooth);
   renderFrame(cur);
@@ -739,9 +796,7 @@ function computeKinematicAngles(P) {
 const _dummy = new THREE.Object3D();
 const _vecY = new THREE.Vector3(0, 1, 0);
 const _boneDir = new THREE.Vector3();
-const _boneMid = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
-const _scaleVec = new THREE.Vector3();
 
 function setCylinderTransform(instancedMesh, index, pA, pB, radius = 0.018) {
   _boneDir.subVectors(pB, pA);
@@ -871,7 +926,6 @@ function renderFrame(fFloat) {
     MANNEQUIN_JOINTS.forEach((jIdx, k) => {
       setJointTransform(jointSphereMesh, k, P[jIdx], jointRadius);
     });
-    // Add shoulder center & hip center joint spheres
     setJointTransform(jointSphereMesh, MANNEQUIN_JOINTS.length, shoMid, jointRadius);
     setJointTransform(jointSphereMesh, MANNEQUIN_JOINTS.length + 1, hipMid, jointRadius);
     jointSphereMesh.instanceMatrix.needsUpdate = true;
@@ -957,10 +1011,6 @@ document.getElementById('t-racket').onclick = (e) => {
   e.target.classList.toggle('on', showRacket);
   renderFrame(cur);
 };
-const capBtn = document.getElementById('t-cap');
-if (capBtn) {
-  capBtn.style.display = 'none'; // Replaced by the studio egg head
-}
 document.getElementById('t-smooth').onclick = (e) => {
   showSmooth = !showSmooth;
   e.target.classList.toggle('on', showSmooth);
@@ -1065,7 +1115,6 @@ function tick(t) {
       if (loop) cur = cur % nFrames;
       else { cur = nFrames - 1; setPlaying(false); }
     }
-    // Sub-frame continuous rendering (ultra smooth 60/120fps motion)
     renderFrame(cur);
   }
 
