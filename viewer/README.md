@@ -86,12 +86,16 @@ python generate_sample_landmarks.py --format csv -o sample_landmarks.csv
 
 ## Controls
 
-- **Orbit**: one-finger drag / mouse drag · **Zoom**: pinch / wheel ·
-  **Pan**: two-finger drag / right-drag
-- **Camera presets** (right rail): Front / Side / Back / Top / Reset, plus
-  Trails, Bones, and auto-Spin toggles
-- **Transport** (bottom deck): first / prev / play-pause / next / last,
-  frame scrubber, 0.25×–2× speed, loop toggle
-- **Keyboard**: Space = play/pause, ←/→ = step frame
-- **HUD** (top left): live hitting-elbow bend, loading-knee bend, torso tilt,
-  computed in 3D from the landmark positions each frame
+- **Orbit**: one-finger drag / mouse drag with full 360° unconstrained rotation (overhead, level, and underneath) · **Zoom**: pinch / wheel · **Pan**: two-finger drag / right-drag
+- **Camera presets & toggles** (right rail):
+  - Front / Side / Back / Top / Reset
+  - **🎾 Racket**: simulates realistic 3D tennis racket in the dominant hand (grip, shaft, throat, string bed, and face normal)
+  - **🧢 Cap**: simulates an athletic tennis sports cap on the player's head, making head orientation and gaze direction immediately clear
+  - **✨ Smooth**: Savitzky-Golay trajectory smoothing to eliminate high-frequency tracking jitter while preserving kinematic peaks
+  - **Trails**: dual wrist swing trails (dominant volt + non-dominant cyan)
+  - **Bones**: skeletal connection lines
+  - **Spin**: turntable auto-rotation
+- **Transport** (bottom deck): first / prev / play-pause / next / last, frame scrubber, 0.25×–2× speed, loop toggle
+- **Keyboard**: Space = play/pause, ←/→ = step frame, R = toggle racket, C = toggle cap, S = toggle smoothing
+- **HUD** (top left): live hitting-elbow bend, loading-knee bend, torso tilt, and eye-level tilt (head stability) computed in 3D each frame
+- **Clean Head & Gaze Stabilizer**: replaces facial landmark clutter with a crisp eye-to-eye gaze bar and head alignment axis
