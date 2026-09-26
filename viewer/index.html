@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>3D Pose Lab — Tennis Shot Technique Analyzer</title>
+<style>
+  :root {
+    --bg: #0e131c;
+    --panel: rgba(16, 22, 33, 0.86);
+    --border: #2a3448;
+    --volt: #c6e014;
+    --cyan: #1ec8f0;
+    --orange: #ff8c1e;
+    --text: #e8edf5;
+    --dim: #8b96a8;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg);
+    color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #scene { position: fixed; inset: 0; touch-action: none; }
+  #scene canvas { display: block; }
+
+  .chip { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    backdrop-filter: blur(6px); }
+
+  #title { position: fixed; top: 12px; left: 12px; padding: 10px 14px; z-index: 10; }
+  #title h1 { margin: 0; font-size: 15px; letter-spacing: 0.4px; }
+  #title h1 .volt { color: var(--volt); }
+  #title p { margin: 4px 0 0; font-size: 11px; color: var(--dim); }
+
+  #badge { position: fixed; top: 12px; right: 12px; padding: 8px 12px; z-index: 10;
+    font-size: 11px; color: var(--dim); text-align: right; line-height: 1.5; }
+  #badge .synthetic { color: var(--orange); font-weight: 700; }
+  #badge .real { color: var(--volt); font-weight: 700; }
+
+  #hud { position: fixed; top: 86px; left: 12px; z-index: 10; padding: 10px 12px;
+    font-size: 12px; line-height: 1.9; min-width: 172px; }
+  #hud .row { display: flex; justify-content: space-between; gap: 12px; }
+  #hud .k { color: var(--dim); }
+  #hud .v { color: var(--volt); font-variant-numeric: tabular-nums; font-weight: 600; }
+  #hud .v.cyan { color: var(--cyan); }
+
+  #nopose { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    z-index: 10; padding: 10px 18px; font-size: 13px; color: var(--orange);
+    display: none; }
+
+  /* right-side camera rail */
+  #cams { position: fixed; right: 12px; top: 50%; transform: translateY(-50%);
+    z-index: 10; display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+  #cams button, .tbtn {
+    background: rgba(30, 40, 58, 0.9); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 10px; font-size: 12px; min-width: 64px; cursor: pointer; }
+  #cams button:active, .tbtn:active { background: rgba(60, 75, 100, 0.95); }
+  #cams button.on { border-color: var(--volt); color: var(--volt); }
+  #cams .sep { height: 1px; background: var(--border); margin: 2px 0; }
+
+  /* bottom control deck */
+  #deck { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 10;
+    padding: 10px 12px; }
+  #deck .row1 { display: flex; align-items: center; gap: 8px; }
+  #deck .row2 { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .pbtn { background: rgba(30, 40, 58, 0.9); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; font-size: 15px; width: 42px; height: 38px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+  .pbtn:active { background: rgba(60, 75, 100, 0.95); }
+  .pbtn.play { width: 52px; border-color: var(--volt); color: var(--volt); font-size: 17px; }
+  #scrub { flex: 1 1 auto; accent-color: var(--volt); height: 38px; cursor: pointer; }
+  #timelabel { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums;
+    white-space: nowrap; min-width: 118px; text-align: right; }
+  #timelabel b { color: var(--text); }
+  .tbtn { font-size: 12px; padding: 8px 10px; min-width: 0; }
+  .tbtn.on { border-color: var(--volt); color: var(--volt); }
+  #loadbtn { margin-left: auto; }
+
+  #err { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    z-index: 20; background: rgba(10, 14, 20, 0.92); padding: 24px; text-align: center; }
+  #err .box { max-width: 420px; font-size: 14px; line-height: 1.6; color: var(--dim); }
+
+  @media (max-width: 640px) {
+    #hud { display: none; }
+    #title p { display: none; }
+    #cams { padding: 8px; gap: 6px; }
+    #cams button { min-width: 54px; padding: 8px 6px; font-size: 11px; }
+    #timelabel { min-width: 0; }
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="scene"></div>
+
+<div id="title" class="chip">
+  <h1>3D Pose Lab <span class="volt">·</span> Tennis Technique</h1>
+  <p>Drag to orbit · pinch to zoom · scrub the timeline</p>
+</div>
+
+<div id="badge" class="chip">loading…</div>
+
+<div id="hud" class="chip">
+  <div class="row"><span class="k">Hit elbow bend</span><span class="v" id="h-elbow">–</span></div>
+  <div class="row"><span class="k">Load knee bend</span><span class="v cyan" id="h-knee">–</span></div>
+  <div class="row"><span class="k">Torso tilt</span><span class="v" id="h-torso">–</span></div>
+</div>
+
+<div id="nopose" class="chip">No pose detected on this frame</div>
+
+<div id="cams" class="chip">
+  <button data-cam="front" class="on">Front</button>
+  <button data-cam="side">Side</button>
+  <button data-cam="back">Back</button>
+  <button data-cam="top">Top</button>
+  <button data-cam="reset">Reset</button>
+  <div class="sep"></div>
+  <button id="t-trails" class="on">Trails</button>
+  <button id="t-bones" class="on">Bones</button>
+  <button id="t-spin">Spin</button>
+</div>
+
+<div id="deck" class="chip">
+  <div class="row1">
+    <button class="pbtn" id="b-first" title="First frame">⏮</button>
+    <button class="pbtn" id="b-prev" title="Previous frame">◀</button>
+    <button class="pbtn play" id="b-play" title="Play / pause">▶</button>
+    <button class="pbtn" id="b-next" title="Next frame">▶</button>
+    <button class="pbtn" id="b-last" title="Last frame">⏭</button>
+    <input type="range" id="scrub" min="0" max="0" value="0" step="1" />
+  </div>
+  <div class="row2">
+    <span id="timelabel"><b>F 0</b> / 0 · 0.00s</span>
+    <button class="tbtn" id="b-speed" title="Playback speed">1×</button>
+    <button class="tbtn on" id="b-loop" title="Loop playback">Loop</button>
+    <button class="tbtn" id="loadbtn" title="Load a landmarks_3d.json file">Load JSON</button>
+    <input type="file" id="file" accept=".json,application/json" style="display:none" />
+  </div>
+</div>
+
+<div id="err"><div class="box" id="errmsg"></div></div>
+
+<script type="module" src="./viewer.js"></script>
+</body>
+</html>
