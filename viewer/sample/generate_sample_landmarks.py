@@ -202,20 +202,51 @@ def to_mediapipe(pt):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate synthetic demo landmarks JSON.")
+    ap = argparse.ArgumentParser(description="Generate synthetic demo landmarks.")
     ap.add_argument("-o", "--output", default="sample_landmarks.json")
+    ap.add_argument(
+        "--format",
+        choices=["json", "csv"],
+        default="json",
+        help="json: landmarks3d@1 payload for the viewer; "
+             "csv: per-landmark rows (frame,timestamp_sec,landmark_index,"
+             "landmark_name,x,y,z,visibility), same layout as the repo's "
+             "export_landmarks_csv, for copy-paste / upload into the viewer.",
+    )
     args = ap.parse_args()
 
-    frames = []
+    # Per-frame MediaPipe-normalized landmarks (shared by both formats).
+    frame_landmarks = []
     for i in range(N_FRAMES):
         p = pose_at(i)
         skel = skeleton(p)
+        frame_landmarks.append([to_mediapipe(skel[j]) for j in range(33)])
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+
+    if args.format == "csv":
+        import csv
+
+        with open(args.output, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["frame", "timestamp_sec", "landmark_index", "landmark_name",
+                        "x", "y", "z", "visibility"])
+            for i, lms in enumerate(frame_landmarks):
+                t = round(i / FPS, 3)
+                for idx, (x, y, z) in enumerate(lms):
+                    w.writerow([i, t, idx, LANDMARK_NAMES[idx], x, y, z, 1.0])
+        print(f"Wrote {args.output} ({os.path.getsize(args.output) / 1024:.0f} KB, "
+              f"{N_FRAMES} frames x 33 landmarks)")
+        return
+
+    frames = []
+    for i, lms in enumerate(frame_landmarks):
         frames.append(
             {
                 "frame": i,
                 "t": round(i / FPS, 3),
                 "detected": True,
-                "landmarks": [to_mediapipe(skel[j]) for j in range(33)],
+                "landmarks": lms,
                 "visibility": [1.0] * 33,
             }
         )
