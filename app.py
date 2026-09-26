@@ -905,7 +905,7 @@ with tab2:
         st.dataframe(df.head(50), use_container_width=True)
 
         # CSV Download Actions
-        col_d1, col_d2 = st.columns(2)
+        col_d1, col_d2, col_d3 = st.columns(3)
 
         clean_csv = df.to_csv(index=False).encode("utf-8")
         with col_d1:
@@ -927,6 +927,25 @@ with tab2:
                     file_name=f"{os.path.splitext(selected_video_name)[0]}_landmarks3d.csv",
                     mime="text/csv",
                     use_container_width=True,
+                )
+
+        with col_d3:
+            if st.session_state.landmarks_history:
+                import json as _json
+                pose_lab_payload = TennisVideoProcessor.build_landmarks3d_payload(
+                    st.session_state.landmarks_history,
+                    fps=meta["fps"],
+                    frame_count=meta["frame_count"],
+                    source_name=selected_video_name,
+                    dominant_hand=dominant_hand,
+                )
+                st.download_button(
+                    label="📥 Download 3D JSON (Pose Lab)",
+                    data=_json.dumps(pose_lab_payload).encode("utf-8"),
+                    file_name=f"{os.path.splitext(selected_video_name)[0]}_landmarks3d.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    help="Load this file in viewer/index.html to explore the swing in 3D.",
                 )
 
 
@@ -956,6 +975,7 @@ with tab3:
     output_video_filepath = os.path.join(OUTPUT_DIR, output_video_filename)
     output_telemetry_csv = os.path.join(OUTPUT_DIR, f"{base_name}_telemetry.csv")
     output_landmarks_csv = os.path.join(OUTPUT_DIR, f"{base_name}_landmarks3d.csv")
+    output_landmarks_json = os.path.join(OUTPUT_DIR, f"{base_name}_landmarks3d.json")
 
     with col_exp_btn:
         st.write("")
@@ -991,6 +1011,16 @@ with tab3:
                 TennisVideoProcessor.export_landmarks_csv(
                     st.session_state.landmarks_history, output_landmarks_csv
                 )
+                # 3D Pose Lab scene file: generated from the same scan that
+                # rendered the video, so the 3D view matches the annotated MP4.
+                TennisVideoProcessor.export_landmarks_json(
+                    st.session_state.landmarks_history,
+                    output_landmarks_json,
+                    fps=meta["fps"],
+                    frame_count=meta["frame_count"],
+                    source_name=selected_video_name,
+                    dominant_hand=dominant_hand,
+                )
 
             total_render_t = time.time() - start_exp
 
@@ -1019,7 +1049,9 @@ with tab3:
                     <b>Telemetry CSV:</b><br>
                     <code style="color: #38BDF8;">{output_telemetry_csv}</code><br><br>
                     <b>3D Landmarks CSV:</b><br>
-                    <code style="color: #F59E0B;">{output_landmarks_csv}</code>
+                    <code style="color: #F59E0B;">{output_landmarks_csv}</code><br><br>
+                    <b>3D Pose Lab JSON:</b><br>
+                    <code style="color: #C6E00F;">{output_landmarks_json}</code>
                 </div>
                 """,
                 unsafe_allow_html=True,

@@ -692,3 +692,102 @@ class TennisVideoProcessor:
         df = pd.DataFrame(landmarks_history)
         df.to_csv(output_csv_path, index=False)
         return output_csv_path
+
+    # ------------------------------------------------------------------
+    # 3D Pose Lab (Three.js viewer) export
+    # ------------------------------------------------------------------
+    LANDMARKS3D_SCHEMA = "tennis-mediapipe/landmarks3d@1"
+    NUM_LANDMARKS = 33
+
+    @staticmethod
+    def build_landmarks3d_payload(
+        landmarks_history: List[Dict[str, Any]],
+        fps: float,
+        frame_count: int,
+        source_name: str,
+        dominant_hand: str = "Right",
+        synthetic: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Pivots the per-landmark scan history into the per-frame
+        "tennis-mediapipe/landmarks3d@1" payload consumed by the Three.js
+        3D viewer (viewer/index.html). Frames without a full 33-landmark
+        set carry landmarks=None so the viewer shows its "no pose" state.
+        """
+        from datetime import datetime, timezone
+
+        by_frame: Dict[int, List[Dict[str, Any]]] = {}
+        for rec in landmarks_history:
+            by_frame.setdefault(rec["frame"], []).append(rec)
+
+        frames = []
+        for frame_idx in range(frame_count):
+            recs = by_frame.get(frame_idx, [])
+            if len(recs) == TennisVideoProcessor.NUM_LANDMARKS:
+                recs.sort(key=lambda r: r["landmark_index"])
+                frames.append(
+                    {
+                        "frame": frame_idx,
+                        "t": round(recs[0]["timestamp_sec"], 3),
+                        "detected": True,
+                        "landmarks": [[r["x"], r["y"], r["z"]] for r in recs],
+                        "visibility": [r["visibility"] for r in recs],
+                    }
+                )
+            else:
+                frames.append(
+                    {
+                        "frame": frame_idx,
+                        "t": round(frame_idx / fps, 3) if fps else 0.0,
+                        "detected": False,
+                        "landmarks": None,
+                        "visibility": None,
+                    }
+                )
+
+        return {
+            "meta": {
+                "schema": TennisVideoProcessor.LANDMARKS3D_SCHEMA,
+                "fps": fps,
+                "frame_count": frame_count,
+                "duration_sec": round(frame_count / fps, 3) if fps else 0.0,
+                "source": source_name,
+                "synthetic": synthetic,
+                "dominant_hand": dominant_hand,
+                "coordinate_system": "mediapipe_normalized",
+                "generated": datetime.now(timezone.utc).isoformat(),
+                "notes": (
+                    "x: 0..1 left-to-right, y: 0..1 top-to-bottom, "
+                    "z: depth (~0 at mid-hip, negative toward camera). "
+                    "Load this file in viewer/index.html (3D Pose Lab)."
+                ),
+            },
+            "landmark_names": TennisPoseDetector.LANDMARK_NAMES,
+            "connections": {
+                "upper": [list(c) for c in TennisPoseDetector.UPPER_BODY_CONNECTIONS],
+                "lower": [list(c) for c in TennisPoseDetector.LOWER_BODY_CONNECTIONS],
+                "head": [list(c) for c in TennisPoseDetector.HEAD_CONNECTIONS],
+            },
+            "frames": frames,
+        }
+
+    @staticmethod
+    def export_landmarks_json(
+        landmarks_history: List[Dict[str, Any]],
+        output_json_path: str,
+        fps: float,
+        frame_count: int,
+        source_name: str,
+        dominant_hand: str = "Right",
+        synthetic: bool = False,
+    ) -> str:
+        """Writes the landmarks3d@1 JSON payload for the 3D Pose Lab viewer."""
+        import json
+
+        payload = TennisVideoProcessor.build_landmarks3d_payload(
+            landmarks_history, fps, frame_count, source_name, dominant_hand, synthetic
+        )
+        os.makedirs(os.path.dirname(os.path.abspath(output_json_path)), exist_ok=True)
+        with open(output_json_path, "w") as f:
+            json.dump(payload, f)
+        return output_json_path

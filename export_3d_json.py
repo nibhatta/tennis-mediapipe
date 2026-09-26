@@ -48,15 +48,14 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from detector import TennisPoseDetector
 from video_processor import TennisVideoProcessor
 
-SCHEMA = "tennis-mediapipe/landmarks3d@1"
-NUM_LANDMARKS = 33
+SCHEMA = TennisVideoProcessor.LANDMARKS3D_SCHEMA
+NUM_LANDMARKS = TennisVideoProcessor.NUM_LANDMARKS
 
 
 def build_payload(
@@ -66,62 +65,15 @@ def build_payload(
     frame_count: int,
     dominant_hand: str,
 ) -> dict:
-    # Pivot the per-landmark history into per-frame records.
-    by_frame = {}
-    for rec in landmarks_history:
-        f = rec["frame"]
-        by_frame.setdefault(f, []).append(rec)
-
-    frames = []
-    for frame_idx in range(frame_count):
-        recs = by_frame.get(frame_idx, [])
-        if len(recs) == NUM_LANDMARKS:
-            recs.sort(key=lambda r: r["landmark_index"])
-            frames.append(
-                {
-                    "frame": frame_idx,
-                    "t": round(recs[0]["timestamp_sec"], 3),
-                    "detected": True,
-                    "landmarks": [[r["x"], r["y"], r["z"]] for r in recs],
-                    "visibility": [r["visibility"] for r in recs],
-                }
-            )
-        else:
-            frames.append(
-                {
-                    "frame": frame_idx,
-                    "t": round(frame_idx / fps, 3) if fps else 0.0,
-                    "detected": False,
-                    "landmarks": None,
-                    "visibility": None,
-                }
-            )
-
-    return {
-        "meta": {
-            "schema": SCHEMA,
-            "fps": fps,
-            "frame_count": frame_count,
-            "duration_sec": round(frame_count / fps, 3) if fps else 0.0,
-            "source": os.path.basename(video_path),
-            "synthetic": False,
-            "dominant_hand": dominant_hand,
-            "coordinate_system": "mediapipe_normalized",
-            "generated": datetime.now(timezone.utc).isoformat(),
-            "notes": (
-                "x: 0..1 left-to-right, y: 0..1 top-to-bottom, "
-                "z: depth (~0 at mid-hip, negative toward camera). "
-                "Produced by tennis-mediapipe export_3d_json.py"
-            ),
-        },
-        "landmark_names": TennisPoseDetector.LANDMARK_NAMES,
-        "connections": {
-            "upper": [list(c) for c in TennisPoseDetector.UPPER_BODY_CONNECTIONS],
-            "lower": [list(c) for c in TennisPoseDetector.LOWER_BODY_CONNECTIONS],
-            "head": [list(c) for c in TennisPoseDetector.HEAD_CONNECTIONS],
-        },
-        "frames": frames,
-    }
+    """Pivot the per-landmark history into the landmarks3d@1 payload."""
+    return TennisVideoProcessor.build_landmarks3d_payload(
+        landmarks_history,
+        fps=fps,
+        frame_count=frame_count,
+        source_name=os.path.basename(video_path),
+        dominant_hand=dominant_hand,
+        synthetic=False,
+    )
 
 
 def main() -> None:
