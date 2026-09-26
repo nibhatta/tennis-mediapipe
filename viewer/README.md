@@ -89,13 +89,12 @@ python generate_sample_landmarks.py --format csv -o sample_landmarks.csv
 - **Orbit**: one-finger drag / mouse drag with full 360° unconstrained rotation (overhead, level, and underneath) · **Zoom**: pinch / wheel · **Pan**: two-finger drag / right-drag
 - **Camera presets & toggles** (right rail):
   - Front / Side / Back / Top / Reset
-  - **🎾 Racket**: simulates realistic 3D tennis racket in the dominant hand (grip, shaft, throat, string bed, and face normal)
-  - **🧢 Cap**: simulates an athletic tennis sports cap on the player's head, making head orientation and gaze direction immediately clear
-  - **✨ Smooth**: Savitzky-Golay trajectory smoothing to eliminate high-frequency tracking jitter while preserving kinematic peaks
-  - **Trails**: dual wrist swing trails (dominant volt + non-dominant cyan)
-  - **Bones**: skeletal connection lines
+  - **🎾 Racket**: simulates realistic 3D rectangular frame tennis racket matching stroke orientation
+  - **✨ Smooth**: Multi-pass Savitzky-Golay filtering and sub-frame cubic Catmull-Rom spline interpolation
+  - **Trails**: dual wrist swing motion trails (dominant volt + non-dominant cyan)
+  - **Bones**: volumetric studio white mannequin skeleton
   - **Spin**: turntable auto-rotation
 - **Transport** (bottom deck): first / prev / play-pause / next / last, frame scrubber, 0.25×–2× speed, loop toggle
-- **Keyboard**: Space = play/pause, ←/→ = step frame, R = toggle racket, C = toggle cap, S = toggle smoothing
-- **HUD** (top left): live hitting-elbow bend, loading-knee bend, torso tilt, and eye-level tilt (head stability) computed in 3D each frame
-- **Clean Head & Gaze Stabilizer**: replaces facial landmark clutter with a crisp eye-to-eye gaze bar and head alignment axis
+- **Keyboard**: Space = play/pause, ←/→ = step frame, R = toggle racket, S = toggle smoothing
+- **HUD** (top left): live hitting-elbow bend, loading-knee bend, torso tilt, and eye-level tilt computed continuously in 3D
+- **Studio Mannequin Anatomy**: Solid pearlescent white bone cylinders, smooth joint spheres, egg-shaped head, neck, anatomical spine & torso cage, and 3D tennis court & net background environment.

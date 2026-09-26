@@ -1,14 +1,15 @@
 /**
  * 3D Pose Lab — Three.js viewer for tennis-mediapipe landmark data.
  *
- * Reads a "tennis-mediapipe/landmarks3d@1" JSON (see export_3d_json.py)
- * or a 33-landmark CSV (see export_landmarks_csv / the analyzer's
- * "Download Full 33-Landmark 3D CSV" button): per-frame MediaPipe
- * 33-landmark 3D positions, rendered as joint dots connected by a skeleton,
- * with a realistic 3D tennis racket simulation, 3D athletic tennis sports cap,
- * clean eye-level gaze stabilization, full 360-degree orbit camera controls,
- * Savitzky-Golay trajectory smoothing, frame scrubber, playback controls,
- * 3D wrist motion trails, and live biomechanical readouts.
+ * Renders an immaculate volumetric 3D biomechanical mannequin with:
+ * - Solid pearlescent white bone cylinders and smooth joint spheres
+ * - Smooth egg-shaped ellipsoid head, neck, anatomical spine & torso cage
+ * - Rectangular frame tennis racket simulation with dynamic grip
+ * - 3D tennis court & net background environment
+ * - Multi-pass Savitzky-Golay trajectory smoothing
+ * - Continuous sub-frame cubic Catmull-Rom spline interpolation for 60/120fps fluid playback
+ * - Full 360-degree unconstrained orbit controls
+ * - Wrist swing motion trails and live biomechanical readouts
  *
  * Coordinate mapping (MediaPipe normalized -> Three.js world):
  *   X = (x - 0.5) * SCALE          (left-to-right stays left-to-right)
@@ -19,17 +20,19 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// ---------------------------------------------------------------- palette
+// ---------------------------------------------------------------- palette & settings
 const COL = {
-  bg: 0x0e131c,
-  volt: 0xc6e014,   // center / head / dominant accents
-  cyan: 0x1ec8f0,   // left side
-  orange: 0xff8c1e, // right side
-  grid: 0x2a3448,
+  bg: 0x050508,       // Pitch black studio background
+  boneWhite: 0xf3f4f6, // Pearlescent studio white
+  jointWhite: 0xf8fafc,
+  volt: 0xc6e014,      // Accent for dominant trail / telemetry
+  cyan: 0x38bdf8,      // Accent for off-hand trail
+  grid: 0x1e293b,
+  courtLine: 0xffffff,
   dim: 0x8b96a8,
 };
-const SCALE = 3.0;          // world units per normalized unit
-const TRAIL_LEN = 28;       // wrist trail length in frames
+const SCALE = 3.0;          // World units per normalized unit
+const TRAIL_LEN = 30;       // Wrist trail length in frames
 const SPEEDS = [0.25, 0.5, 1, 2];
 
 // MediaPipe landmark indices
@@ -52,7 +55,6 @@ const IDX = {
   L_FOOT: 31, R_FOOT: 32,
 };
 
-// Full 33-landmark names (mirrors detector.py LANDMARK_NAMES)
 const LANDMARK_NAMES = [
   "nose", "left_eye_inner", "left_eye", "left_eye_outer",
   "right_eye_inner", "right_eye", "right_eye_outer",
@@ -65,36 +67,56 @@ const LANDMARK_NAMES = [
   "left_foot_index", "right_foot_index",
 ];
 
-// Clean skeleton connections (Clean head gaze stabilizer + body)
-const DEFAULT_CONNECTIONS = {
-  upper: [
-    [11, 12], [11, 13], [13, 15], [15, 17], [15, 19], [15, 21], [17, 19],
-    [12, 14], [14, 16], [16, 18], [16, 20], [16, 22], [18, 20],
-    [11, 23], [12, 24], [23, 24]
-  ],
-  lower: [
-    [23, 25], [25, 27], [27, 29], [29, 31], [27, 31],
-    [24, 26], [26, 28], [28, 30], [30, 32], [28, 32]
-  ],
-  head: [
-    [2, 5],     // Eye-to-Eye horizontal gaze stabilizer bar
-    [0, 2],     // Nose to left eye
-    [0, 5],     // Nose to right eye
-  ],
-};
+// Volumetric mannequin bone connections
+const MANNEQUIN_BONES = [
+  // Upper Torso
+  { id: 'neck', isSpecial: 'neck' },                          // Shoulder center -> Head base
+  { id: 'spine', isSpecial: 'spine' },                        // Shoulder center -> Hip center
+  { a: IDX.L_SH, b: IDX.R_SH },                               // Shoulder bar
+  { a: IDX.L_HIP, b: IDX.R_HIP },                             // Hip bar
+  // Side Torso
+  { a: IDX.L_SH, b: IDX.L_HIP },                              // Left torso bar
+  { a: IDX.R_SH, b: IDX.R_HIP },                              // Right torso bar
+  // Left Arm
+  { a: IDX.L_SH, b: IDX.L_EL },                               // Left upper arm
+  { a: IDX.L_EL, b: IDX.L_WR },                               // Left forearm
+  // Right Arm
+  { a: IDX.R_SH, b: IDX.R_EL },                               // Right upper arm
+  { a: IDX.R_EL, b: IDX.R_WR },                               // Right forearm
+  // Left Leg
+  { a: IDX.L_HIP, b: IDX.L_KN },                              // Left thigh
+  { a: IDX.L_KN, b: IDX.L_AN },                               // Left shin
+  { a: IDX.L_AN, b: IDX.L_HEEL },                             // Left heel
+  { a: IDX.L_HEEL, b: IDX.L_FOOT },                           // Left foot base
+  { a: IDX.L_AN, b: IDX.L_FOOT },                             // Left instep
+  // Right Leg
+  { a: IDX.R_HIP, b: IDX.R_KN },                              // Right thigh
+  { a: IDX.R_KN, b: IDX.R_AN },                               // Right shin
+  { a: IDX.R_AN, b: IDX.R_HEEL },                             // Right heel
+  { a: IDX.R_HEEL, b: IDX.R_FOOT },                           // Right foot base
+  { a: IDX.R_AN, b: IDX.R_FOOT },                             // Right instep
+];
 
-// ---------------------------------------------------------------- Savitzky-Golay Smoothing
-const SG_COEFFS = {
-  5: [-3, 12, 17, 12, -3].map(v => v / 35),
-  7: [-2, 3, 6, 7, 6, 3, -2].map(v => v / 21),
-  9: [-21, 14, 39, 54, 59, 54, 39, 14, -21].map(v => v / 231),
-};
+// Joint sphere indices to render
+const MANNEQUIN_JOINTS = [
+  IDX.L_SH, IDX.R_SH,
+  IDX.L_EL, IDX.R_EL,
+  IDX.L_WR, IDX.R_WR,
+  IDX.L_HIP, IDX.R_HIP,
+  IDX.L_KN, IDX.R_KN,
+  IDX.L_AN, IDX.R_AN,
+  IDX.L_HEEL, IDX.R_HEEL,
+  IDX.L_FOOT, IDX.R_FOOT,
+];
 
-function applySavitzkyGolay1D(arr, windowSize = 7) {
+// ---------------------------------------------------------------- Advanced Multi-Pass Smoothing
+const SG_11 = [-36, 9, 44, 69, 84, 89, 84, 69, 44, 9, -36].map(v => v / 429);
+const SG_7 = [-2, 3, 6, 7, 6, 3, -2].map(v => v / 21);
+
+function applySavitzkyGolay1D(arr, coeffs) {
   const n = arr.length;
-  if (n < windowSize) return arr.slice();
-  const coeffs = SG_COEFFS[windowSize] || SG_COEFFS[7];
   const half = Math.floor(coeffs.length / 2);
+  if (n < coeffs.length) return arr.slice();
   const out = new Float64Array(n);
 
   for (let i = 0; i < n; i++) {
@@ -111,11 +133,11 @@ function applySavitzkyGolay1D(arr, windowSize = 7) {
   return out;
 }
 
-function smoothFramesData(rawFrames) {
-  const n = rawFrames.length;
-  if (n < 5) return rawFrames;
+function smoothFramesData(rawFramesList) {
+  const n = rawFramesList.length;
+  if (n < 5) return rawFramesList;
 
-  const smoothed = rawFrames.map(f => ({
+  const smoothed = rawFramesList.map(f => ({
     frame: f.frame,
     t: f.t,
     detected: f.detected,
@@ -123,29 +145,37 @@ function smoothFramesData(rawFrames) {
     landmarks: f.landmarks ? f.landmarks.map(p => (p ? [...p] : null)) : null,
   }));
 
-  const detectedIndices = [];
+  const detIdxs = [];
   for (let i = 0; i < n; i++) {
-    if (rawFrames[i].detected && rawFrames[i].landmarks) {
-      detectedIndices.push(i);
+    if (rawFramesList[i].detected && rawFramesList[i].landmarks) {
+      detIdxs.push(i);
     }
   }
 
-  if (detectedIndices.length < 5) return smoothed;
+  const m = detIdxs.length;
+  if (m < 5) return smoothed;
 
-  const m = detectedIndices.length;
-  const win = m >= 9 ? 9 : (m >= 7 ? 7 : 5);
+  const coeffs = m >= 11 ? SG_11 : SG_7;
 
   for (let j = 0; j < 33; j++) {
     for (let d = 0; d < 3; d++) {
       const series = new Float64Array(m);
       for (let k = 0; k < m; k++) {
-        const fIdx = detectedIndices[k];
-        series[k] = rawFrames[fIdx].landmarks[j][d];
+        series[k] = rawFramesList[detIdxs[k]].landmarks[j][d];
       }
-      const smoothSeries = applySavitzkyGolay1D(series, win);
+      // Pass 1: Savitzky-Golay polynomial filter
+      const pass1 = applySavitzkyGolay1D(series, coeffs);
+      // Pass 2: Gentle Gaussian low-pass smoothing
+      const pass2 = new Float64Array(m);
       for (let k = 0; k < m; k++) {
-        const fIdx = detectedIndices[k];
-        smoothed[fIdx].landmarks[j][d] = smoothSeries[k];
+        const pPrev = pass1[Math.max(0, k - 1)];
+        const pCurr = pass1[k];
+        const pNext = pass1[Math.min(m - 1, k + 1)];
+        pass2[k] = pPrev * 0.2 + pCurr * 0.6 + pNext * 0.2;
+      }
+
+      for (let k = 0; k < m; k++) {
+        smoothed[detIdxs[k]].landmarks[j][d] = pass2[k];
       }
     }
   }
@@ -154,13 +184,13 @@ function smoothFramesData(rawFrames) {
 }
 
 // ---------------------------------------------------------------- state
-let data = null;            // loaded JSON payload
-let rawFrames = [];         // raw input frame records
-let smoothFrames = [];      // Savitzky-Golay smoothed frame records
-let activeFrames = [];      // currently rendered frames (raw or smoothed)
+let data = null;
+let rawFrames = [];
+let smoothFrames = [];
+let activeFrames = [];
 let nFrames = 0;
 let fps = 30;
-let cur = 0;                // current frame (float while playing)
+let cur = 0;
 let playing = false;
 let loop = true;
 let speedIdx = 2;
@@ -170,32 +200,30 @@ let wasPlaying = false;
 let showTrails = true;
 let showBones = true;
 let showRacket = true;
-let showCap = true;
+let showCap = false;
 let showSmooth = true;
 let dominantHand = 'Right';
-let wristWorldRaw = { dom: [], off: [] };
-let wristWorldSmooth = { dom: [], off: [] };
 let wristWorld = { dom: [], off: [] };
 
 // ---------------------------------------------------------------- three setup
 const container = document.getElementById('scene');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(COL.bg);
-scene.fog = new THREE.Fog(COL.bg, 8, 18);
 
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+const camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 100);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.target.set(0, 0.15, 0);
 controls.minDistance = 0.8;
 controls.maxDistance = 16;
-// Allow full 360-degree rotation in all directions (overhead, level, and below horizontal)
 controls.minPolarAngle = 0;
 controls.maxPolarAngle = Math.PI;
 controls.autoRotateSpeed = 1.6;
@@ -216,433 +244,210 @@ function setCam(name) {
 }
 setCam('front');
 
-scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a2233, 1.2));
-const key = new THREE.DirectionalLight(0xffffff, 1.7);
-key.position.set(3, 6, 4);
-scene.add(key);
-const rim = new THREE.DirectionalLight(COL.cyan, 0.6);
-rim.position.set(-4, 3, -3);
-scene.add(rim);
+// Studio 3-Point Lighting
+scene.add(new THREE.AmbientLight(0xffffff, 0.85));
 
-const grid = new THREE.GridHelper(10, 20, COL.grid, 0x1a2233);
-grid.position.y = -0.78;
-scene.add(grid);
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
+keyLight.position.set(4, 7, 5);
+scene.add(keyLight);
 
-// ---------------------------------------------------------------- skeleton objects
-const NUM_LM = 33;
-const jointMesh = new THREE.InstancedMesh(
-  new THREE.SphereGeometry(0.035, 16, 12),
-  new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.1 }),
-  NUM_LM
-);
-jointMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-jointMesh.frustumCulled = false;
-scene.add(jointMesh);
+const fillLight = new THREE.DirectionalLight(0xdbeafe, 1.0);
+fillLight.position.set(-5, 4, 3);
+scene.add(fillLight);
 
-const dummy = new THREE.Object3D();
-const tmpColor = new THREE.Color();
+const rimLight = new THREE.DirectionalLight(0xffffff, 1.2);
+rimLight.position.set(0, 5, -6);
+scene.add(rimLight);
 
-function jointColor(i) {
-  if (i === IDX.L_EYE) return tmpColor.setHex(COL.cyan).clone();
-  if (i === IDX.R_EYE) return tmpColor.setHex(COL.orange).clone();
-  if (i === IDX.NOSE) return tmpColor.setHex(COL.volt).clone();
-  if (i <= 10) return tmpColor.setHex(COL.dim).clone();
-  if (i % 2 === 1) return tmpColor.setHex(COL.cyan).clone();    // Left side
-  return tmpColor.setHex(COL.orange).clone();                  // Right side
-}
-for (let i = 0; i < NUM_LM; i++) jointMesh.setColorAt(i, jointColor(i));
-jointMesh.instanceColor.needsUpdate = true;
+// ---------------------------------------------------------------- 3D Tennis Court & Net in Background
+function createTennisCourt() {
+  const courtGroup = new THREE.Group();
 
-let boneLines = null;
-let bonePos = null;
-let neckLine = null;
-let neckPos = null;
-
-function buildBones(connections) {
-  if (boneLines) { scene.remove(boneLines); boneLines.geometry.dispose(); }
-  if (neckLine) { scene.remove(neckLine); neckLine.geometry.dispose(); }
-
-  const pairs = [];
-  const conn = connections || DEFAULT_CONNECTIONS;
-  const upper = conn.upper || DEFAULT_CONNECTIONS.upper;
-  const lower = conn.lower || DEFAULT_CONNECTIONS.lower;
-  const head = DEFAULT_CONNECTIONS.head;
-
-  for (const c of upper) pairs.push(c);
-  for (const c of lower) pairs.push(c);
-  for (const c of head) pairs.push(c);
-
-  const n = pairs.length;
-  bonePos = new Float32Array(n * 2 * 3);
-  const boneCol = new Float32Array(n * 2 * 3);
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(bonePos, 3).setUsage(THREE.DynamicDrawUsage));
-
-  const cA = new THREE.Color(), cB = new THREE.Color();
-  pairs.forEach(([a, b], k) => {
-    cA.copy(jointColor(a)); cB.copy(jointColor(b));
-    if ((a === 2 && b === 5) || (a === 5 && b === 2)) {
-      cA.setHex(COL.volt); cB.setHex(COL.volt);
-    }
-    boneCol.set([cA.r, cA.g, cA.b], k * 6);
-    boneCol.set([cB.r, cB.g, cB.b], k * 6 + 3);
+  // Court floor
+  const floorGeo = new THREE.PlaneGeometry(16, 26);
+  const floorMat = new THREE.MeshStandardMaterial({
+    color: 0x07090e,
+    roughness: 0.95,
+    metalness: 0.05,
   });
-  geo.setAttribute('color', new THREE.BufferAttribute(boneCol, 3));
-  boneLines = new THREE.LineSegments(geo,
-    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9, linewidth: 2 }));
-  boneLines.frustumCulled = false;
-  boneLines.userData.pairs = pairs;
-  scene.add(boneLines);
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -0.78;
+  courtGroup.add(floor);
 
-  // Neck bone (Eye center to Shoulder center)
-  neckPos = new Float32Array(6);
-  const neckGeo = new THREE.BufferGeometry();
-  neckGeo.setAttribute('position', new THREE.BufferAttribute(neckPos, 3).setUsage(THREE.DynamicDrawUsage));
-  const neckCol = new Float32Array(6);
-  const cVolt = new THREE.Color(COL.volt);
-  neckCol.set([cVolt.r, cVolt.g, cVolt.b, cVolt.r, cVolt.g, cVolt.b], 0);
-  neckGeo.setAttribute('color', new THREE.BufferAttribute(neckCol, 3));
-  neckLine = new THREE.Line(neckGeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.8 }));
-  neckLine.frustumCulled = false;
-  scene.add(neckLine);
+  // Court Line Markings
+  const lineMat = new THREE.LineBasicMaterial({ color: COL.courtLine, transparent: true, opacity: 0.45, linewidth: 2 });
+  const lines = [];
+
+  // Baseline at player's side
+  lines.push(-4.1, -0.77, 3.5, 4.1, -0.77, 3.5);
+  // Baseline far side
+  lines.push(-4.1, -0.77, -9.5, 4.1, -0.77, -9.5);
+  // Doubles sidelines
+  lines.push(-4.1, -0.77, 3.5, -4.1, -0.77, -9.5);
+  lines.push(4.1, -0.77, 3.5, 4.1, -0.77, -9.5);
+  // Singles sidelines
+  lines.push(-3.2, -0.77, 3.5, -3.2, -0.77, -9.5);
+  lines.push(3.2, -0.77, 3.5, 3.2, -0.77, -9.5);
+  // Service lines
+  lines.push(-3.2, -0.77, -0.5, 3.2, -0.77, -0.5);
+  lines.push(-3.2, -0.77, -5.5, 3.2, -0.77, -5.5);
+  // Center service line
+  lines.push(0, -0.77, -0.5, 0, -0.77, -5.5);
+  // Center mark
+  lines.push(0, -0.77, 3.5, 0, -0.77, 3.1);
+
+  const linesGeo = new THREE.BufferGeometry();
+  linesGeo.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
+  const courtLinesMesh = new THREE.LineSegments(linesGeo, lineMat);
+  courtGroup.add(courtLinesMesh);
+
+  // 3D Tennis Net in Background (at z = -3.0)
+  const netZ = -3.0;
+  const netY = -0.78;
+  const netHeight = 0.95;
+  const netWidth = 8.6;
+
+  // Net posts
+  const postMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.3, metalness: 0.8 });
+  const postGeo = new THREE.CylinderGeometry(0.035, 0.035, netHeight + 0.1, 16);
+
+  const leftPost = new THREE.Mesh(postGeo, postMat);
+  leftPost.position.set(-netWidth / 2, netY + (netHeight + 0.1) / 2, netZ);
+  courtGroup.add(leftPost);
+
+  const rightPost = new THREE.Mesh(postGeo, postMat);
+  rightPost.position.set(netWidth / 2, netY + (netHeight + 0.1) / 2, netZ);
+  courtGroup.add(rightPost);
+
+  // Top white net band / cable
+  const bandMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 });
+  const bandGeo = new THREE.CylinderGeometry(0.02, 0.02, netWidth, 16);
+  const netBand = new THREE.Mesh(bandGeo, bandMat);
+  netBand.rotation.z = Math.PI / 2;
+  netBand.position.set(0, netY + netHeight, netZ);
+  courtGroup.add(netBand);
+
+  // Translucent Net Grid Mesh
+  const netGridMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.22,
+    side: THREE.DoubleSide,
+  });
+  const netMeshGeo = new THREE.PlaneGeometry(netWidth, netHeight, 40, 10);
+  const netMesh = new THREE.Mesh(netMeshGeo, netGridMat);
+  netMesh.position.set(0, netY + netHeight / 2, netZ);
+  courtGroup.add(netMesh);
+
+  // Small center origin arrow marker
+  const originMarker = new THREE.Mesh(
+    new THREE.ConeGeometry(0.03, 0.08, 8),
+    new THREE.MeshBasicMaterial({ color: 0xfacc15 })
+  );
+  originMarker.position.set(0, -0.74, 0);
+  courtGroup.add(originMarker);
+
+  return courtGroup;
 }
+scene.add(createTennisCourt());
 
-// ---------------------------------------------------------------- Mannequin Face & Exaggerated White Visor
-function createWilsonLogoTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 512;
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 512, 512);
+// ---------------------------------------------------------------- Volumetric 3D Mannequin Skeleton Objects
+const NUM_BONES = MANNEQUIN_BONES.length;
+const NUM_JOINTS = MANNEQUIN_JOINTS.length + 2; // + shoulder mid & hip mid
 
-  ctx.fillStyle = '#eb142b'; // Iconic Wilson Red
+// Studio Bone & Joint Material
+const mannequinMat = new THREE.MeshStandardMaterial({
+  color: COL.boneWhite,
+  roughness: 0.28,
+  metalness: 0.06,
+});
 
-  // Stylized Wilson 'W' logo
-  ctx.beginPath();
-  ctx.moveTo(115, 140);
-  ctx.bezierCurveTo(125, 120, 155, 120, 165, 140);
-  ctx.bezierCurveTo(160, 220, 155, 310, 168, 355);
-  ctx.bezierCurveTo(178, 395, 212, 395, 222, 355);
-  ctx.bezierCurveTo(230, 310, 230, 220, 232, 140);
-  ctx.bezierCurveTo(242, 120, 272, 120, 282, 140);
-  ctx.bezierCurveTo(280, 220, 275, 310, 288, 355);
-  ctx.bezierCurveTo(298, 395, 332, 395, 342, 355);
-  ctx.bezierCurveTo(350, 310, 350, 220, 352, 140);
-  ctx.bezierCurveTo(362, 120, 392, 120, 402, 140);
-  // Outer loops
-  ctx.bezierCurveTo(400, 240, 385, 350, 368, 395);
-  ctx.bezierCurveTo(342, 445, 275, 445, 252, 395);
-  ctx.bezierCurveTo(240, 370, 235, 340, 232, 310);
-  // Center loop
-  ctx.bezierCurveTo(228, 340, 222, 370, 210, 395);
-  ctx.bezierCurveTo(188, 445, 120, 445, 95, 395);
-  ctx.bezierCurveTo(80, 350, 92, 240, 115, 140);
-  ctx.closePath();
-  ctx.fill();
+// 1. Instanced Bone Cylinders
+const boneRadius = 0.018;
+const boneCylinderGeo = new THREE.CylinderGeometry(boneRadius, boneRadius, 1.0, 20);
+boneCylinderGeo.translate(0, 0.5, 0); // Origin at cylinder base
+const boneCylinderMesh = new THREE.InstancedMesh(boneCylinderGeo, mannequinMat, NUM_BONES);
+boneCylinderMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+boneCylinderMesh.frustumCulled = false;
+scene.add(boneCylinderMesh);
 
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.anisotropy = 4;
-  return tex;
-}
+// 2. Instanced Joint Spheres
+const jointRadius = 0.025;
+const jointSphereGeo = new THREE.SphereGeometry(jointRadius, 20, 16);
+const jointSphereMesh = new THREE.InstancedMesh(jointSphereGeo, mannequinMat, NUM_JOINTS);
+jointSphereMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+jointSphereMesh.frustumCulled = false;
+scene.add(jointSphereMesh);
 
-function createCapMesh() {
+// 3. Egg-Shaped Mannequin Head
+const headGeo = new THREE.SphereGeometry(1.0, 32, 24);
+headGeo.scale(0.062, 0.095, 0.075);
+const headMesh = new THREE.Mesh(headGeo, mannequinMat);
+headMesh.frustumCulled = false;
+scene.add(headMesh);
+
+// ---------------------------------------------------------------- 3D Rectangular Tennis Racket
+function createRectangularRacketMesh() {
   const group = new THREE.Group();
 
-  // Materials
-  const whiteBrimMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 0.3,
-    metalness: 0.05,
-    side: THREE.DoubleSide,
-  });
-
-  const whiteBandMat = new THREE.MeshStandardMaterial({
-    color: 0xf8fafc,
-    roughness: 0.5,
-    metalness: 0.05,
-    side: THREE.DoubleSide,
-  });
-
-  const rimMat = new THREE.MeshStandardMaterial({
-    color: 0x0f172a, // Dark contrast rim border
-    roughness: 0.4,
-    metalness: 0.1,
-  });
-
-  const faceMat = new THREE.MeshStandardMaterial({
-    color: 0x1e293b, // Stylized dark slate athletic mannequin
-    roughness: 0.55,
-    metalness: 0.15,
-    transparent: true,
-    opacity: 0.85,
-    side: THREE.DoubleSide,
-  });
-
-  const featureMat = new THREE.MeshStandardMaterial({
-    color: 0x38bdf8, // Cyan accent for facial landmarks
+  const handleMat = new THREE.MeshStandardMaterial({
+    color: 0x94a3b8,
     roughness: 0.4,
     metalness: 0.2,
   });
-
-  const logoTex = createWilsonLogoTexture();
-  const logoMat = new THREE.MeshStandardMaterial({
-    map: logoTex,
-    transparent: true,
-    roughness: 0.35,
-    metalness: 0.15,
-    side: THREE.DoubleSide,
-  });
-
-  const R = 0.088;      // Head radius at forehead
-  const bw = 0.125;     // Exaggerated half-width of visor brim (~0.25m broad)
-  const bl = 0.33;      // Doubled forward length of brim (~0.33m long projection!)
-  const bThick = 0.009; // Solid 3D thickness
-
-  // -------------------------------------------------------------
-  // 1. Stylized Athletic Mannequin Head & Face
-  // -------------------------------------------------------------
-  const headGroup = new THREE.Group();
-
-  // 1A. Cranium / Head Contour
-  const craniumGeo = new THREE.SphereGeometry(0.082, 24, 16);
-  craniumGeo.scale(0.88, 1.15, 1.0);
-  const cranium = new THREE.Mesh(craniumGeo, faceMat);
-  cranium.position.set(0, -0.015, -0.02);
-  headGroup.add(cranium);
-
-  // 1B. Jawline & Chin
-  const jawGeo = new THREE.ConeGeometry(0.065, 0.09, 16);
-  jawGeo.scale(0.85, 1.0, 0.95);
-  jawGeo.rotateX(Math.PI);
-  const jaw = new THREE.Mesh(jawGeo, faceMat);
-  jaw.position.set(0, -0.075, 0.01);
-  headGroup.add(jaw);
-
-  // 1C. 3D Nose Bridge & Tip (Pointing forward along +Z)
-  const noseShape = new THREE.Shape();
-  noseShape.moveTo(-0.008, 0.02);
-  noseShape.lineTo(0.008, 0.02);
-  noseShape.lineTo(0.012, -0.025);
-  noseShape.lineTo(0, -0.035);
-  noseShape.lineTo(-0.012, -0.025);
-  noseShape.closePath();
-  const noseExtrude = { steps: 1, depth: 0.025, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.004, bevelSegments: 2 };
-  const noseGeo = new THREE.ExtrudeGeometry(noseShape, noseExtrude);
-  const noseMesh = new THREE.Mesh(noseGeo, faceMat);
-  noseMesh.position.set(0, 0.005, 0.068);
-  headGroup.add(noseMesh);
-
-  // 1D. Eye Sockets (Left and Right)
-  const eyeGeo = new THREE.SphereGeometry(0.012, 12, 8);
-  const leftEye = new THREE.Mesh(eyeGeo, featureMat);
-  leftEye.position.set(-0.034, 0.015, 0.072);
-  headGroup.add(leftEye);
-
-  const rightEye = new THREE.Mesh(eyeGeo, featureMat);
-  rightEye.position.set(0.034, 0.015, 0.072);
-  headGroup.add(rightEye);
-
-  group.add(headGroup);
-
-  // -------------------------------------------------------------
-  // 2. Open-Top Visor Headband
-  // -------------------------------------------------------------
-  const bandArc = Math.PI * 0.72;
-  const bandGeo = new THREE.CylinderGeometry(R, R, 0.024, 24, 1, true, -bandArc / 2, bandArc);
-  const band = new THREE.Mesh(bandGeo, whiteBandMat);
-  band.position.set(0, 0.022, 0);
-  band.rotation.y = Math.PI / 2;
-  group.add(band);
-
-  // Red Wilson 'W' Logo centered on the front band
-  const logoGeo = new THREE.PlaneGeometry(0.042, 0.042);
-  const logoMesh = new THREE.Mesh(logoGeo, logoMat);
-  logoMesh.position.set(0, 0.022, R * 1.01);
-  group.add(logoMesh);
-
-  // -------------------------------------------------------------
-  // 3. Exaggerated Forward-Projecting White Visor Brim (Doubled Length)
-  // -------------------------------------------------------------
-  const brimShape = new THREE.Shape();
-  brimShape.moveTo(-bw, 0);
-  brimShape.quadraticCurveTo(-bw * 0.95, bl * 0.55, -bw * 0.45, bl * 0.92);
-  brimShape.quadraticCurveTo(0, bl, bw * 0.45, bl * 0.92);
-  brimShape.quadraticCurveTo(bw * 0.95, bl * 0.55, bw, 0);
-  brimShape.quadraticCurveTo(0, 0.03, -bw, 0);
-
-  const extrudeSettings = {
-    steps: 1,
-    depth: bThick,
-    bevelEnabled: true,
-    bevelThickness: 0.002,
-    bevelSize: 0.002,
-    bevelSegments: 2,
-  };
-
-  const brimGeo = new THREE.ExtrudeGeometry(brimShape, extrudeSettings);
-
-  // Lateral downward curvature across the visor width
-  const posAttr = brimGeo.attributes.position;
-  for (let i = 0; i < posAttr.count; i++) {
-    const x = posAttr.getX(i);
-    const curveZ = -0.032 * (1 - Math.cos((x / bw) * Math.PI * 0.5));
-    posAttr.setZ(i, posAttr.getZ(i) + curveZ);
-  }
-  brimGeo.computeVertexNormals();
-
-  const brimMesh = new THREE.Mesh(brimGeo, whiteBrimMat);
-  // Forward pitch: rotates +Y to +Z (pointing straight forward away from the face)
-  const pitchAngle = Math.PI / 2 - 0.24;
-  brimMesh.rotation.x = pitchAngle;
-  brimMesh.position.set(0, 0.018, R * 0.85);
-  group.add(brimMesh);
-
-  // 4. Contrast Edge Border around the perimeter of the forward visor
-  const edgeCurve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(-bw, 0, 0),
-    new THREE.Vector3(-bw * 0.8, bl * 0.45, -0.02),
-    new THREE.Vector3(-bw * 0.4, bl * 0.9, -0.03),
-    new THREE.Vector3(0, bl, -0.032),
-    new THREE.Vector3(bw * 0.4, bl * 0.9, -0.03),
-    new THREE.Vector3(bw * 0.8, bl * 0.45, -0.02),
-    new THREE.Vector3(bw, 0, 0),
-  ]);
-  const edgeGeo = new THREE.TubeGeometry(edgeCurve, 36, 0.003, 6, false);
-  const edgeMesh = new THREE.Mesh(edgeGeo, rimMat);
-  edgeMesh.rotation.x = pitchAngle;
-  edgeMesh.position.set(0, 0.018, R * 0.85);
-  group.add(edgeMesh);
-
-  group.frustumCulled = false;
-  return group;
-}
-
-const capMesh = createCapMesh();
-scene.add(capMesh);
-
-// ---------------------------------------------------------------- 3D Tennis Racket Simulation
-function createRacketMesh() {
-  const group = new THREE.Group();
-
-  const gripMat = new THREE.MeshStandardMaterial({
-    color: 0xf1f5f9,
-    roughness: 0.85,
-    metalness: 0.05,
-  });
-  const capMat = new THREE.MeshStandardMaterial({
-    color: 0x0f172a,
-    roughness: 0.4,
-  });
   const frameMat = new THREE.MeshStandardMaterial({
-    color: COL.volt,
-    roughness: 0.3,
-    metalness: 0.7,
-  });
-  const throatMat = new THREE.MeshStandardMaterial({
-    color: 0x38bdf8,
-    roughness: 0.35,
-    metalness: 0.6,
+    color: COL.jointWhite,
+    roughness: 0.25,
+    metalness: 0.08,
   });
   const stringMat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
-    opacity: 0.2,
+    opacity: 0.15,
     side: THREE.DoubleSide,
   });
-  const stringGridMat = new THREE.LineBasicMaterial({
-    color: 0x94a3b8,
-    transparent: true,
-    opacity: 0.4,
-  });
 
-  const gripLen = 0.20;
-  const gripRadius = 0.015;
-  const shaftLen = 0.15;
-  const headHeight = 0.32;
-  const headWidth = 0.23;
+  const gripLen = 0.18;
+  const gripRadius = 0.012;
+  const headW = 0.17;
+  const headH = 0.24;
+  const tubeR = 0.0075;
 
-  // 1. Butt Cap
-  const buttCap = new THREE.Mesh(
-    new THREE.CylinderGeometry(gripRadius * 1.18, gripRadius * 1.3, 0.016, 12),
-    capMat
-  );
-  buttCap.position.y = 0.008;
-  group.add(buttCap);
-
-  // 2. Handle / Grip
-  const grip = new THREE.Mesh(
-    new THREE.CylinderGeometry(gripRadius, gripRadius * 1.1, gripLen, 12),
-    gripMat
-  );
-  grip.position.y = 0.016 + gripLen / 2;
+  // 1. Handle Rod extending from wrist
+  const gripGeo = new THREE.CylinderGeometry(gripRadius, gripRadius, gripLen, 16);
+  gripGeo.translate(0, gripLen / 2, 0);
+  const grip = new THREE.Mesh(gripGeo, handleMat);
   group.add(grip);
 
-  // 3. V-Throat & Shaft
-  const throatY = 0.016 + gripLen;
-  const branchLen = Math.hypot(shaftLen, headWidth * 0.38);
-  const branchAngle = Math.atan2(headWidth * 0.38, shaftLen);
+  // 2. Rectangular 3D Frame Head
+  const rectPts = [
+    new THREE.Vector3(-headW / 2, 0, 0),
+    new THREE.Vector3(-headW / 2, headH, 0),
+    new THREE.Vector3(headW / 2, headH, 0),
+    new THREE.Vector3(headW / 2, 0, 0),
+  ];
+  const rectCurve = new THREE.CatmullRomCurve3(rectPts, true, 'catmullrom', 0.05);
+  const frameGeo = new THREE.TubeGeometry(rectCurve, 32, tubeR, 8, true);
+  const frame = new THREE.Mesh(frameGeo, frameMat);
+  frame.position.y = gripLen;
+  group.add(frame);
 
-  const throatL = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.008, branchLen, 8), throatMat);
-  throatL.position.set(-headWidth * 0.19, throatY + shaftLen / 2, 0);
-  throatL.rotation.z = branchAngle;
-  group.add(throatL);
-
-  const throatR = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.008, branchLen, 8), throatMat);
-  throatR.position.set(headWidth * 0.19, throatY + shaftLen / 2, 0);
-  throatR.rotation.z = -branchAngle;
-  group.add(throatR);
-
-  // 4. Elliptical Racket Head
-  const headCenterY = throatY + shaftLen + headHeight / 2 - 0.02;
-  const curve = new THREE.EllipseCurve(
-    0, 0,
-    headWidth / 2, headHeight / 2,
-    0, 2 * Math.PI,
-    false,
-    0
-  );
-  const points2D = curve.getPoints(36);
-  const path3D = new THREE.CatmullRomCurve3(points2D.map(p => new THREE.Vector3(p.x, p.y, 0)), true);
-  const hoopGeo = new THREE.TubeGeometry(path3D, 36, 0.007, 8, true);
-  const hoop = new THREE.Mesh(hoopGeo, frameMat);
-  hoop.position.y = headCenterY;
-  group.add(hoop);
-
-  // 5. String Bed
-  const stringBedGeo = new THREE.ShapeGeometry(new THREE.Shape(points2D));
-  const stringBed = new THREE.Mesh(stringBedGeo, stringMat);
-  stringBed.position.y = headCenterY;
+  // 3. Translucent String Face Plane
+  const stringGeo = new THREE.PlaneGeometry(headW - tubeR * 2, headH - tubeR * 2);
+  const stringBed = new THREE.Mesh(stringGeo, stringMat);
+  stringBed.position.set(0, gripLen + headH / 2, 0);
   group.add(stringBed);
-
-  // 6. String Grid Lines
-  const stringLinesGeo = new THREE.BufferGeometry();
-  const linePositions = [];
-  for (let sx = -headWidth * 0.38; sx <= headWidth * 0.38; sx += 0.026) {
-    const normX = sx / (headWidth / 2);
-    if (Math.abs(normX) < 0.98) {
-      const halfH = (headHeight / 2) * Math.sqrt(Math.max(0, 1 - normX * normX));
-      linePositions.push(sx, headCenterY - halfH, 0, sx, headCenterY + halfH, 0);
-    }
-  }
-  for (let sy = -headHeight * 0.42; sy <= headHeight * 0.42; sy += 0.03) {
-    const normY = sy / (headHeight / 2);
-    if (Math.abs(normY) < 0.98) {
-      const halfW = (headWidth / 2) * Math.sqrt(Math.max(0, 1 - normY * normY));
-      linePositions.push(-halfW, headCenterY + sy, 0, halfW, headCenterY + sy, 0);
-    }
-  }
-  stringLinesGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
-  const stringsMesh = new THREE.LineSegments(stringLinesGeo, stringGridMat);
-  group.add(stringsMesh);
 
   group.frustumCulled = false;
   return group;
 }
 
-const racketMesh = createRacketMesh();
+const racketMesh = createRectangularRacketMesh();
 scene.add(racketMesh);
 
-// Wrist trails (dominant = volt, off-hand = cyan)
+// ---------------------------------------------------------------- Wrist Trails
 function makeTrail(hex) {
   const g = new THREE.BufferGeometry();
   const pos = new Float32Array(TRAIL_LEN * 3);
@@ -664,13 +469,54 @@ function makeTrail(hex) {
 const trailDom = makeTrail(COL.volt);
 const trailOff = makeTrail(COL.cyan);
 
-// ---------------------------------------------------------------- data handling
-function mpToWorld(lm, out) {
+// ---------------------------------------------------------------- coordinate & sub-frame interpolation
+function mpToWorldVec(lm, out) {
   out.set((lm[0] - 0.5) * SCALE, (0.5 - lm[1]) * SCALE, -lm[2] * SCALE);
   return out;
 }
-const _v = new THREE.Vector3();
-const _p = new THREE.Vector3();
+
+// Continuous Cubic Catmull-Rom sub-frame interpolation
+const _interpP = Array.from({ length: 33 }, () => new THREE.Vector3());
+
+function catmullRom1D(p0, p1, p2, p3, t) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return 0.5 * (
+    (2 * p1) +
+    (-p0 + p2) * t +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+  );
+}
+
+function getInterpolatedLandmarks(fFloat) {
+  if (activeFrames.length === 0) return null;
+  const clamped = THREE.MathUtils.clamp(fFloat, 0, nFrames - 1);
+  const i = Math.floor(clamped);
+  const alpha = clamped - i;
+
+  const f0 = activeFrames[Math.max(0, i - 1)];
+  const f1 = activeFrames[i];
+  const f2 = activeFrames[Math.min(nFrames - 1, i + 1)];
+  const f3 = activeFrames[Math.min(nFrames - 1, i + 2)];
+
+  if (!f1 || !f1.detected || !f1.landmarks) return null;
+
+  const lm0 = f0 && f0.landmarks ? f0.landmarks : f1.landmarks;
+  const lm1 = f1.landmarks;
+  const lm2 = f2 && f2.landmarks ? f2.landmarks : f1.landmarks;
+  const lm3 = f3 && f3.landmarks ? f3.landmarks : lm2;
+
+  for (let j = 0; j < 33; j++) {
+    const p0 = lm0[j], p1 = lm1[j], p2 = lm2[j], p3 = lm3[j];
+    const x = catmullRom1D(p0[0], p1[0], p2[0], p3[0], alpha);
+    const y = catmullRom1D(p0[1], p1[1], p2[1], p3[1], alpha);
+    const z = catmullRom1D(p0[2], p1[2], p2[2], p3[2], alpha);
+    mpToWorldVec([x, y, z], _interpP[j]);
+  }
+
+  return _interpP;
+}
 
 function precomputeWristTrails(fList) {
   const dIdx = dominantHand === 'Right' ? IDX.R_WR : IDX.L_WR;
@@ -678,8 +524,8 @@ function precomputeWristTrails(fList) {
   const res = { dom: [], off: [] };
   for (const fr of fList) {
     if (fr.detected && fr.landmarks) {
-      res.dom.push(mpToWorld(fr.landmarks[dIdx], new THREE.Vector3()).clone());
-      res.off.push(mpToWorld(fr.landmarks[oIdx], new THREE.Vector3()).clone());
+      res.dom.push(mpToWorldVec(fr.landmarks[dIdx], new THREE.Vector3()).clone());
+      res.off.push(mpToWorldVec(fr.landmarks[oIdx], new THREE.Vector3()).clone());
     } else {
       const l = res.dom.length;
       res.dom.push(l ? res.dom[l - 1].clone() : new THREE.Vector3());
@@ -691,7 +537,7 @@ function precomputeWristTrails(fList) {
 
 function updateActiveSmoothing() {
   activeFrames = showSmooth ? smoothFrames : rawFrames;
-  wristWorld = showSmooth ? wristWorldSmooth : wristWorldRaw;
+  wristWorld = precomputeWristTrails(activeFrames);
   const btn = document.getElementById('t-smooth');
   if (btn) btn.classList.toggle('on', showSmooth);
   renderFrame(cur);
@@ -708,10 +554,6 @@ function loadData(payload, label) {
   cur = 0; playing = false;
 
   smoothFrames = smoothFramesData(rawFrames);
-  buildBones(payload.connections);
-
-  wristWorldRaw = precomputeWristTrails(rawFrames);
-  wristWorldSmooth = precomputeWristTrails(smoothFrames);
   updateActiveSmoothing();
 
   document.getElementById('scrub').max = nFrames - 1;
@@ -725,19 +567,19 @@ function loadData(payload, label) {
 // ---------------------------------------------------------------- CSV input
 function splitCSVLine(line) {
   const out = [];
-  let cur = '', quoted = false;
+  let curVal = '', quoted = false;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     if (quoted) {
       if (c === '"') {
-        if (line[i + 1] === '"') { cur += '"'; i++; }
+        if (line[i + 1] === '"') { curVal += '"'; i++; }
         else quoted = false;
-      } else cur += c;
+      } else curVal += c;
     } else if (c === '"') quoted = true;
-    else if (c === ',') { out.push(cur); cur = ''; }
-    else cur += c;
+    else if (c === ',') { out.push(curVal); curVal = ''; }
+    else curVal += c;
   }
-  out.push(cur);
+  out.push(curVal);
   return out;
 }
 
@@ -802,10 +644,10 @@ function parseLandmarksCSV(text, label) {
     }
   }
   if (byFrame.size === 0)
-    throw new Error('No usable landmark rows found. Check the column layout against the expected header.');
+    throw new Error('No usable landmark rows found.');
 
   const maxF = Math.max(...byFrame.keys());
-  let fps = 30;
+  let parsedFps = 30;
   const ts = [];
   for (let f = 0; f <= maxF; f++) {
     const e = byFrame.get(f);
@@ -821,74 +663,68 @@ function parseLandmarksCSV(text, label) {
       deltas.sort((a, b) => a - b);
       const med = deltas[Math.floor(deltas.length / 2)];
       if (med > 0) {
-        fps = Math.round(1000 / med) / 1000;
-        let best = null, bestErr = 0.02;
+        parsedFps = Math.round(1000 / med) / 1000;
         for (const std of [23.976, 24, 25, 29.97, 30, 50, 59.94, 60, 120]) {
-          const err = Math.abs(fps - std) / std;
-          if (err < bestErr) { bestErr = err; best = std; }
+          if (Math.abs(parsedFps - std) / std < 0.02) { parsedFps = std; break; }
         }
-        if (best !== null) fps = best;
       }
     }
   }
 
-  const frames = [];
+  const framesList = [];
   let detectedCount = 0;
   for (let f = 0; f <= maxF; f++) {
     const e = byFrame.get(f);
     if (e && e.rows.size === 33) {
       const lms = [], vis = [];
       for (let j = 0; j < 33; j++) { lms.push(e.rows.get(j)); vis.push(e.vis.get(j) ?? 1.0); }
-      frames.push({
-        frame: f, t: e.t !== null ? e.t : Math.round(f / fps * 1000) / 1000,
+      framesList.push({
+        frame: f, t: e.t !== null ? e.t : Math.round(f / parsedFps * 1000) / 1000,
         detected: true, landmarks: lms, visibility: vis,
       });
       detectedCount++;
     } else {
-      frames.push({
-        frame: f, t: Math.round(f / fps * 1000) / 1000,
+      framesList.push({
+        frame: f, t: Math.round(f / parsedFps * 1000) / 1000,
         detected: false, landmarks: null, visibility: null,
       });
     }
   }
   if (detectedCount === 0)
-    throw new Error('No complete frames found: every frame needs all 33 landmarks (indices 0-32).');
+    throw new Error('No complete frames found: every frame needs all 33 landmarks.');
 
   return {
     meta: {
       schema: 'tennis-mediapipe/landmarks3d@1',
-      fps, frame_count: frames.length,
-      duration_sec: Math.round(frames.length / fps * 1000) / 1000,
+      fps: parsedFps, frame_count: framesList.length,
+      duration_sec: Math.round(framesList.length / parsedFps * 1000) / 1000,
       source: label || 'pasted.csv',
       synthetic: /sample/i.test(label || ''),
       dominant_hand: 'Right',
       coordinate_system: 'mediapipe_normalized',
       generated: new Date().toISOString(),
-      notes: 'Parsed from a pasted/uploaded 33-landmark CSV in the 3D Pose Lab viewer.',
+      notes: 'Parsed from CSV in 3D Pose Lab.',
     },
     landmark_names: LANDMARK_NAMES,
-    connections: DEFAULT_CONNECTIONS,
-    frames,
+    frames: framesList,
   };
 }
 
-function frameAngles(fr) {
-  const P = fr.landmarks.map(p => mpToWorld(p, new THREE.Vector3()));
+function computeKinematicAngles(P) {
   const v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
   function bend3(ai, bi, ci) {
     v1.subVectors(P[ai], P[bi]); v2.subVectors(P[ci], P[bi]);
     const cos = THREE.MathUtils.clamp(v1.normalize().dot(v2.normalize()), -1, 1);
     return 180 - THREE.MathUtils.radToDeg(Math.acos(cos));
   }
-  const R = dominantHand === 'Right';
-  const elbow = bend3(R ? IDX.R_SH : IDX.L_SH, R ? IDX.R_EL : IDX.L_EL, R ? IDX.R_WR : IDX.L_WR);
-  const knee = bend3(R ? IDX.R_HIP : IDX.L_HIP, R ? IDX.R_KN : IDX.L_KN, R ? IDX.R_AN : IDX.L_AN);
+  const isRight = dominantHand === 'Right';
+  const elbow = bend3(isRight ? IDX.R_SH : IDX.L_SH, isRight ? IDX.R_EL : IDX.L_EL, isRight ? IDX.R_WR : IDX.L_WR);
+  const knee = bend3(isRight ? IDX.R_HIP : IDX.L_HIP, isRight ? IDX.R_KN : IDX.L_KN, isRight ? IDX.R_AN : IDX.L_AN);
   const hip = new THREE.Vector3().addVectors(P[IDX.L_HIP], P[IDX.R_HIP]).multiplyScalar(0.5);
   const sho = new THREE.Vector3().addVectors(P[IDX.L_SH], P[IDX.R_SH]).multiplyScalar(0.5);
   const torso = new THREE.Vector3().subVectors(sho, hip).normalize();
   const tilt = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(torso.y, -1, 1)));
 
-  // Eye-level horizontal gaze tilt angle (head stability)
   const eyeVec = new THREE.Vector3().subVectors(P[IDX.R_EYE], P[IDX.L_EYE]);
   const eyeLen = eyeVec.length();
   let eyeTilt = 0;
@@ -899,7 +735,43 @@ function frameAngles(fr) {
   return { elbow, knee, tilt, eyeTilt };
 }
 
-// ---------------------------------------------------------------- rendering
+// ---------------------------------------------------------------- volumetric skeleton rendering
+const _dummy = new THREE.Object3D();
+const _vecY = new THREE.Vector3(0, 1, 0);
+const _boneDir = new THREE.Vector3();
+const _boneMid = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
+const _scaleVec = new THREE.Vector3();
+
+function setCylinderTransform(instancedMesh, index, pA, pB, radius = 0.018) {
+  _boneDir.subVectors(pB, pA);
+  const len = _boneDir.length();
+  if (len < 1e-4) {
+    _dummy.position.set(0, -999, 0);
+    _dummy.scale.set(0, 0, 0);
+    _dummy.updateMatrix();
+    instancedMesh.setMatrixAt(index, _dummy.matrix);
+    return;
+  }
+  _boneDir.normalize();
+  _quat.setFromUnitVectors(_vecY, _boneDir);
+
+  _dummy.position.copy(pA);
+  _dummy.quaternion.copy(_quat);
+  _dummy.scale.set(radius / 0.018, len, radius / 0.018);
+  _dummy.updateMatrix();
+  instancedMesh.setMatrixAt(index, _dummy.matrix);
+}
+
+function setJointTransform(instancedMesh, index, pos, radius = 0.025) {
+  _dummy.position.copy(pos);
+  _dummy.quaternion.identity();
+  _dummy.scale.setScalar(radius / 0.025);
+  _dummy.updateMatrix();
+  instancedMesh.setMatrixAt(index, _dummy.matrix);
+}
+
+// Racket positioning
 const _fa = new THREE.Vector3();
 const _h = new THREE.Vector3();
 const _yWorld = new THREE.Vector3();
@@ -908,13 +780,12 @@ const _zWorld = new THREE.Vector3();
 const _nPalm = new THREE.Vector3();
 const _rotMat = new THREE.Matrix4();
 
-function updateRacketPose(fr) {
-  if (!fr || !fr.detected || !fr.landmarks || !showRacket) {
+function updateRacketPose(P) {
+  if (!showRacket || !P) {
     racketMesh.visible = false;
     return;
   }
 
-  const P = fr.landmarks.map(p => mpToWorld(p, new THREE.Vector3()));
   const isRight = dominantHand === 'Right';
   const wIdx = isRight ? IDX.R_WR : IDX.L_WR;
   const eIdx = isRight ? IDX.R_EL : IDX.L_EL;
@@ -924,15 +795,11 @@ function updateRacketPose(fr) {
 
   const pW = P[wIdx], pE = P[eIdx], pP = P[pIdx], pI = P[iIdx], pT = P[tIdx];
 
-  // Forearm pointing vector (from elbow to wrist)
   _fa.subVectors(pW, pE).normalize();
-
-  // Hand center & direction (from wrist to knuckles)
   const handCenter = new THREE.Vector3().add(pP).add(pI).add(pT).multiplyScalar(1 / 3);
   _h.subVectors(handCenter, pW);
   const handLen = _h.length();
 
-  // Racket long axis (handle pointing direction)
   if (handLen > 0.02) {
     _h.normalize();
     _yWorld.copy(_fa).multiplyScalar(0.35).addScaledVector(_h, 0.65).normalize();
@@ -940,7 +807,6 @@ function updateRacketPose(fr) {
     _yWorld.copy(_fa);
   }
 
-  // Palm normal calculation
   const vIndexPinky = new THREE.Vector3().subVectors(pI, pP);
   const vThumbWrist = new THREE.Vector3().subVectors(pT, pW);
   _nPalm.crossVectors(vIndexPinky, vThumbWrist);
@@ -952,146 +818,90 @@ function updateRacketPose(fr) {
   _nPalm.normalize();
   if (!isRight) _nPalm.negate();
 
-  // Construct orthonormal coordinate basis: [X: side width, Y: long axis / shaft, Z: face normal]
   _xWorld.crossVectors(_yWorld, _nPalm).normalize();
   _zWorld.crossVectors(_xWorld, _yWorld).normalize();
   _xWorld.crossVectors(_yWorld, _zWorld).normalize();
 
   _rotMat.makeBasis(_xWorld, _yWorld, _zWorld);
   racketMesh.quaternion.setFromRotationMatrix(_rotMat);
-
-  // Position handle firmly inside the player's palm
-  racketMesh.position.copy(pW).sub(_yWorld.clone().multiplyScalar(0.06));
+  racketMesh.position.copy(pW).sub(_yWorld.clone().multiplyScalar(0.04));
   racketMesh.visible = true;
-}
-
-// ---------------------------------------------------------------- Head & Tennis Sports Cap Pose
-const _uRight = new THREE.Vector3();
-const _uUp = new THREE.Vector3();
-const _uFwd = new THREE.Vector3();
-const _rotMatCap = new THREE.Matrix4();
-const _pCap = new THREE.Vector3();
-
-function updateCapPose(fr) {
-  if (!fr || !fr.detected || !fr.landmarks || !showCap) {
-    capMesh.visible = false;
-    return;
-  }
-
-  const P = fr.landmarks.map(p => mpToWorld(p, new THREE.Vector3()));
-  const pLeye = P[IDX.L_EYE];
-  const pReye = P[IDX.R_EYE];
-  const pNose = P[IDX.NOSE];
-  const pLsho = P[IDX.L_SH];
-  const pRsho = P[IDX.R_SH];
-
-  const eyeMid = new THREE.Vector3().addVectors(pLeye, pReye).multiplyScalar(0.5);
-  const shoMid = new THREE.Vector3().addVectors(pLsho, pRsho).multiplyScalar(0.5);
-
-  const eyeDist = pLeye.distanceTo(pReye);
-  const scale = Math.max(0.65, Math.min(1.8, eyeDist / 0.115));
-
-  // 1. Right vector: from Left Eye to Right Eye (towards player's right)
-  _uRight.subVectors(pReye, pLeye).normalize();
-
-  // 2. Up vector: from Shoulder midpoint to Eye midpoint
-  _uUp.subVectors(eyeMid, shoMid).normalize();
-
-  // 3. Forward vector: gaze direction perpendicular to up and right vectors
-  _uFwd.crossVectors(_uUp, _uRight).normalize();
-
-  // Align forward vector with nose direction
-  const noseDir = new THREE.Vector3().subVectors(pNose, eyeMid);
-  if (_uFwd.dot(noseDir) < 0) {
-    _uFwd.negate();
-  }
-
-  // Orthogonalize basis
-  _uRight.crossVectors(_uUp, _uFwd).normalize();
-  _uUp.crossVectors(_uFwd, _uRight).normalize();
-
-  _rotMatCap.makeBasis(_uRight, _uUp, _uFwd);
-  capMesh.quaternion.setFromRotationMatrix(_rotMatCap);
-  capMesh.scale.setScalar(scale);
-
-  // Position mannequin face & visor centered at eye level
-  _pCap.copy(eyeMid)
-    .addScaledVector(_uUp, 0.012 * scale)
-    .addScaledVector(_uFwd, -0.010 * scale);
-  capMesh.position.copy(_pCap);
-  capMesh.visible = true;
 }
 
 function renderFrame(fFloat) {
   if (activeFrames.length === 0) return;
-  const i = Math.max(0, Math.min(nFrames - 1, Math.round(fFloat)));
-  const fr = activeFrames[i];
-  const ok = fr && fr.detected && fr.landmarks;
-  jointMesh.visible = !!ok;
-  if (boneLines) boneLines.visible = !!ok && showBones;
-  if (neckLine) neckLine.visible = !!ok && showBones;
-  trailDom.visible = trailOff.visible = !!ok && showTrails;
+
+  const P = getInterpolatedLandmarks(fFloat);
+  const ok = !!P;
+
+  boneCylinderMesh.visible = ok && showBones;
+  jointSphereMesh.visible = ok && showBones;
+  headMesh.visible = ok && showBones;
+  trailDom.visible = trailOff.visible = ok && showTrails;
   document.getElementById('nopose').style.display = ok ? 'none' : 'block';
 
   if (ok) {
-    const vis = fr.visibility || [];
-    for (let j = 0; j < NUM_LM; j++) {
-      mpToWorld(fr.landmarks[j], _p);
-      dummy.position.copy(_p);
+    const shoMid = new THREE.Vector3().addVectors(P[IDX.L_SH], P[IDX.R_SH]).multiplyScalar(0.5);
+    const hipMid = new THREE.Vector3().addVectors(P[IDX.L_HIP], P[IDX.R_HIP]).multiplyScalar(0.5);
+    const eyeMid = new THREE.Vector3().addVectors(P[IDX.L_EYE], P[IDX.R_EYE]).multiplyScalar(0.5);
 
-      // Clean Face Filtering
-      let s = 1.0;
-      if (j === IDX.L_EYE || j === IDX.R_EYE) {
-        s = 1.15; // Distinct clean eye markers
-      } else if (j === IDX.NOSE) {
-        s = 0.55; // Subtle nose marker
-      } else if (j <= 10) {
-        s = 0.0;  // Hide other facial landmark clutter
+    // Spine direction & Head base
+    const spineDir = new THREE.Vector3().subVectors(shoMid, hipMid).normalize();
+    const headBase = new THREE.Vector3().copy(shoMid).addScaledVector(spineDir, 0.14);
+    const headCenter = new THREE.Vector3().copy(shoMid).addScaledVector(spineDir, 0.23);
+
+    // 1. Render Bone Cylinders
+    MANNEQUIN_BONES.forEach((bone, bIdx) => {
+      let pA, pB;
+      if (bone.isSpecial === 'neck') {
+        pA = shoMid;
+        pB = headBase;
+      } else if (bone.isSpecial === 'spine') {
+        pA = hipMid;
+        pB = shoMid;
       } else {
-        s = (vis[j] ?? 1) < 0.4 ? 0.35 : 1.0;
+        pA = P[bone.a];
+        pB = P[bone.b];
       }
-
-      dummy.scale.setScalar(s);
-      dummy.updateMatrix();
-      jointMesh.setMatrixAt(j, dummy.matrix);
-    }
-    jointMesh.instanceMatrix.needsUpdate = true;
-
-    // Bone segments
-    const pairs = boneLines.userData.pairs;
-    pairs.forEach(([a, b], k) => {
-      mpToWorld(fr.landmarks[a], _p);
-      bonePos.set([_p.x, _p.y, _p.z], k * 6);
-      mpToWorld(fr.landmarks[b], _p);
-      bonePos.set([_p.x, _p.y, _p.z], k * 6 + 3);
+      setCylinderTransform(boneCylinderMesh, bIdx, pA, pB, boneRadius);
     });
-    boneLines.geometry.attributes.position.needsUpdate = true;
+    boneCylinderMesh.instanceMatrix.needsUpdate = true;
 
-    // Clean Neck connection (Eye midpoint to shoulder midpoint)
-    const pLeye = mpToWorld(fr.landmarks[IDX.L_EYE], new THREE.Vector3());
-    const pReye = mpToWorld(fr.landmarks[IDX.R_EYE], new THREE.Vector3());
-    const pLsho = mpToWorld(fr.landmarks[IDX.L_SH], new THREE.Vector3());
-    const pRsho = mpToWorld(fr.landmarks[IDX.R_SH], new THREE.Vector3());
-    const eyeMid = new THREE.Vector3().addVectors(pLeye, pReye).multiplyScalar(0.5);
-    const shoMid = new THREE.Vector3().addVectors(pLsho, pRsho).multiplyScalar(0.5);
-    neckPos.set([eyeMid.x, eyeMid.y, eyeMid.z, shoMid.x, shoMid.y, shoMid.z], 0);
-    neckLine.geometry.attributes.position.needsUpdate = true;
+    // 2. Render Joint Spheres
+    MANNEQUIN_JOINTS.forEach((jIdx, k) => {
+      setJointTransform(jointSphereMesh, k, P[jIdx], jointRadius);
+    });
+    // Add shoulder center & hip center joint spheres
+    setJointTransform(jointSphereMesh, MANNEQUIN_JOINTS.length, shoMid, jointRadius);
+    setJointTransform(jointSphereMesh, MANNEQUIN_JOINTS.length + 1, hipMid, jointRadius);
+    jointSphereMesh.instanceMatrix.needsUpdate = true;
 
-    // 3D Tennis Racket & Sports Cap Pose Updates
-    updateRacketPose(fr);
-    updateCapPose(fr);
+    // 3. Render Egg-Shaped Head
+    headMesh.position.copy(headCenter);
+    const headUp = new THREE.Vector3().subVectors(eyeMid, shoMid).normalize();
+    const headRight = new THREE.Vector3().subVectors(P[IDX.R_EYE], P[IDX.L_EYE]).normalize();
+    const headFwd = new THREE.Vector3().crossVectors(headUp, headRight).normalize();
+    const headBasis = new THREE.Matrix4().makeBasis(headRight, headUp, headFwd);
+    headMesh.quaternion.setFromRotationMatrix(headBasis);
+    headMesh.visible = showBones;
 
-    // Trails
+    // 4. Render Rectangular Tennis Racket
+    updateRacketPose(P);
+
+    // 5. Render Fluid Wrist Trails
+    const iFloat = THREE.MathUtils.clamp(fFloat, 0, nFrames - 1);
+    const currIdx = Math.round(iFloat);
     for (const [line, arr] of [[trailDom, wristWorld.dom], [trailOff, wristWorld.off]]) {
       const pos = line.geometry.attributes.position.array;
       for (let k = 0; k < TRAIL_LEN; k++) {
-        const src = arr[Math.max(0, i - (TRAIL_LEN - 1 - k))];
+        const src = arr[Math.max(0, currIdx - (TRAIL_LEN - 1 - k))];
         pos.set([src.x, src.y, src.z], k * 3);
       }
       line.geometry.attributes.position.needsUpdate = true;
     }
 
-    const { elbow, knee, tilt, eyeTilt } = frameAngles(fr);
+    // 6. Live Telemetry
+    const { elbow, knee, tilt, eyeTilt } = computeKinematicAngles(P);
     document.getElementById('h-elbow').textContent = `${elbow.toFixed(0)}°`;
     document.getElementById('h-knee').textContent = `${knee.toFixed(0)}°`;
     document.getElementById('h-torso').textContent = `${tilt.toFixed(0)}°`;
@@ -1099,12 +909,12 @@ function renderFrame(fFloat) {
     if (hEye) hEye.textContent = `${eyeTilt >= 0 ? '+' : ''}${eyeTilt.toFixed(1)}°`;
   } else {
     racketMesh.visible = false;
-    capMesh.visible = false;
   }
 
-  if (!scrubbing) document.getElementById('scrub').value = i;
+  const intFrame = Math.round(fFloat);
+  if (!scrubbing) document.getElementById('scrub').value = intFrame;
   document.getElementById('timelabel').innerHTML =
-    `<b>F ${i}</b> / ${nFrames - 1} · ${(i / fps).toFixed(2)}s`;
+    `<b>F ${intFrame}</b> / ${nFrames - 1} · ${(fFloat / fps).toFixed(2)}s`;
 }
 
 // ---------------------------------------------------------------- transport
@@ -1147,11 +957,10 @@ document.getElementById('t-racket').onclick = (e) => {
   e.target.classList.toggle('on', showRacket);
   renderFrame(cur);
 };
-document.getElementById('t-cap').onclick = (e) => {
-  showCap = !showCap;
-  e.target.classList.toggle('on', showCap);
-  renderFrame(cur);
-};
+const capBtn = document.getElementById('t-cap');
+if (capBtn) {
+  capBtn.style.display = 'none'; // Replaced by the studio egg head
+}
 document.getElementById('t-smooth').onclick = (e) => {
   showSmooth = !showSmooth;
   e.target.classList.toggle('on', showSmooth);
@@ -1232,11 +1041,6 @@ window.addEventListener('keydown', (e) => {
     document.getElementById('t-racket')?.classList.toggle('on', showRacket);
     renderFrame(cur);
   }
-  if (e.key === 'c' || e.key === 'C') {
-    showCap = !showCap;
-    document.getElementById('t-cap')?.classList.toggle('on', showCap);
-    renderFrame(cur);
-  }
   if (e.key === 's' || e.key === 'S') {
     showSmooth = !showSmooth;
     document.getElementById('t-smooth')?.classList.toggle('on', showSmooth);
@@ -1249,19 +1053,22 @@ function showErr(msg) {
   document.getElementById('err').style.display = 'flex';
 }
 
-// ---------------------------------------------------------------- main loop
+// ---------------------------------------------------------------- continuous 60fps main loop
 function tick(t) {
   requestAnimationFrame(tick);
   const dt = Math.min(0.1, (t - lastT) / 1000 || 0);
   lastT = t;
+
   if (playing && nFrames > 0 && !scrubbing) {
     cur += dt * fps * SPEEDS[speedIdx];
     if (cur >= nFrames) {
       if (loop) cur = cur % nFrames;
       else { cur = nFrames - 1; setPlaying(false); }
     }
+    // Sub-frame continuous rendering (ultra smooth 60/120fps motion)
     renderFrame(cur);
   }
+
   controls.update();
   renderer.render(scene, camera);
 }
